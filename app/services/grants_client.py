@@ -14,7 +14,7 @@ RETRY_BACKOFF = [2, 5, 15]  # seconds
 
 
 class GrantsGovClient:
-    def __init__(self, delay: float = 1.0, max_concurrent: int = 3):
+    def __init__(self, delay: float = 0.25, max_concurrent: int = 10):
         self._delay = delay
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._last_request_time = 0.0
@@ -95,7 +95,7 @@ class GrantsGovClient:
     ) -> list[dict[str, Any]]:
         """Paginate through all search results for each status."""
         if opp_statuses is None:
-            opp_statuses = ["posted", "forecasted"]
+            opp_statuses = ["posted", "forecasted", "closed", "archived"]
 
         all_items = []
 
@@ -107,7 +107,7 @@ class GrantsGovClient:
                     result = await self.search(
                         opp_status=status,
                         page_number=page,
-                        rows_per_page=25,
+                        rows_per_page=100,
                     )
                 except RuntimeError as e:
                     logger.error(f"Failed to fetch page {page} for {status}: {e}")
@@ -121,7 +121,7 @@ class GrantsGovClient:
                 total_hits = result.get("hitCount", 0)
                 logger.info(f"Page {page}: got {len(items)} items, total {status}={total_hits}")
 
-                if page * 25 >= total_hits:
+                if page * 100 >= total_hits:
                     break
 
                 page += 1

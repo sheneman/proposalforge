@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Admin - ProposalForge{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2><i class="bi bi-gear-fill"></i> Admin Panel</h2>
+        <p class="text-muted mb-0">Monitor and control data harvesting from Grants.gov</p>
+    </div>
+</div>
+
+<!-- Section A: Live Sync Status -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-navy text-white">
+        <i class="bi bi-activity"></i> Live Sync Status
+    </div>
+    <div class="card-body" id="sync-live"
+         hx-get="/admin/sync/live"
+         hx-trigger="load, every 2s"
+         hx-swap="innerHTML">
+        <div class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+            <span class="text-muted ms-2">Loading...</span>
+        </div>
+    </div>
+</div>
+
+<!-- Section B: Sync History -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-navy text-white">
+        <i class="bi bi-clock-history"></i> Sync History
+    </div>
+    <div class="card-body" id="sync-history"
+         hx-get="/admin/sync/history"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML">
+        <div class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+            <span class="text-muted ms-2">Loading...</span>
+        </div>
+    </div>
+</div>
+
+<!-- Section C: Data Health -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-navy text-white">
+        <i class="bi bi-heart-pulse"></i> Data Health
+    </div>
+    <div class="card-body" id="data-health"
+         hx-get="/admin/data/health"
+         hx-trigger="load, every 60s"
+         hx-swap="innerHTML">
+        <div class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+            <span class="text-muted ms-2">Loading...</span>
+        </div>
+    </div>
+</div>
+
+<!-- Section D: Scheduler Control -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-navy text-white">
+        <i class="bi bi-calendar-check"></i> Scheduler Control
+    </div>
+    <div class="card-body" id="scheduler"
+         hx-get="/admin/scheduler"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <div class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+            <span class="text-muted ms-2">Loading...</span>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/admin.js"></script>
+{% endblock %}

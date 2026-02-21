@@ -7,6 +7,7 @@ from app.models.category import (
     OpportunityALN,
 )
 from app.models.enums import OpportunityStatus
+from app.models.sync_log import SyncLog
 
 __all__ = [
     "Agency",
@@ -16,4 +17,5 @@ __all__ = [
     "OpportunityFundingCategory",
     "OpportunityALN",
     "OpportunityStatus",
+    "SyncLog",
 ]

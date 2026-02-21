@@ -1,0 +1,55 @@
+{% if logs %}
+<div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Items</th>
+                <th>Success</th>
+                <th>Errors</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td>
+                    <span class="badge bg-light text-dark">{{ log.sync_type | title }}</span>
+                </td>
+                <td>
+                    {% if log.status == 'completed' %}
+                    <span class="badge bg-success">Completed</span>
+                    {% elif log.status == 'failed' %}
+                    <span class="badge bg-danger" {% if log.error_message %}title="{{ log.error_message }}"{% endif %}>Failed</span>
+                    {% elif log.status == 'cancelled' %}
+                    <span class="badge bg-warning text-dark">Cancelled</span>
+                    {% elif log.status == 'running' %}
+                    <span class="badge bg-primary">
+                        <span class="spinner-border spinner-border-sm" style="width: 0.7em; height: 0.7em;" role="status"></span>
+                        Running
+                    </span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ log.status }}</span>
+                    {% endif %}
+                </td>
+                <td class="small">{{ log.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="small">
+                    {% if log.duration_seconds is not none %}
+                    {{ log.duration_seconds | round(1) }}s
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>{{ log.total_items }}</td>
+                <td class="text-success">{{ log.success_count }}</td>
+                <td class="text-danger">{{ log.error_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted text-center mb-0 py-3">No sync history yet.</p>
+{% endif %}

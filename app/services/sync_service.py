@@ -11,6 +11,7 @@ from app.models import (
     Agency, Opportunity, OpportunityApplicantType,
     OpportunityFundingInstrument, OpportunityFundingCategory, OpportunityALN,
 )
+from app.models.sync_log import SyncLog
 from app.services.grants_client import GrantsGovClient
 from app.services.cache_service import cache_service
 
@@ -33,6 +34,8 @@ class SyncService:
         self.is_syncing = False
         self.last_sync: datetime | None = None
         self.sync_stats: dict = {}
+        self._cancel_requested = False
+        self._current_log_id: int | None = None
 
     def _parse_date(self, date_str: str | None) -> date | None:
         if not date_str:
@@ -89,6 +92,42 @@ class SyncService:
         except (ValueError, TypeError):
             pass
         return None
+
+    async def _create_sync_log(self, sync_type: str) -> int:
+        """Create a sync_log row and return its id."""
+        async with async_session() as session:
+            async with session.begin():
+                log = SyncLog(
+                    sync_type=sync_type,
+                    status="running",
+                    started_at=datetime.utcnow(),
+                )
+                session.add(log)
+                await session.flush()
+                log_id = log.id
+        return log_id
+
+    async def _finish_sync_log(self, log_id: int, status: str, stats: dict, error_msg: str | None = None):
+        """Update sync_log row on completion."""
+        now = datetime.utcnow()
+        async with async_session() as session:
+            async with session.begin():
+                log = await session.get(SyncLog, log_id)
+                if log:
+                    log.status = status
+                    log.completed_at = now
+                    log.duration_seconds = (now - log.started_at).total_seconds()
+                    log.total_items = stats.get("total", 0)
+                    log.success_count = stats.get("success", 0)
+                    log.error_count = stats.get("errors", 0)
+                    log.error_message = error_msg
+
+    def cancel_sync(self):
+        """Request cancellation of the running sync."""
+        if self.is_syncing:
+            self._cancel_requested = True
+            return True
+        return False
 
     async def _upsert_opportunity(self, session: AsyncSession, detail: dict) -> Opportunity | None:
         try:
@@ -252,7 +291,21 @@ class SyncService:
             return
 
         self.is_syncing = True
-        self.sync_stats = {"started": datetime.utcnow().isoformat(), "total": 0, "success": 0, "errors": 0}
+        self._cancel_requested = False
+        self.sync_stats = {
+            "started": datetime.utcnow().isoformat(),
+            "type": "full",
+            "total": 0,
+            "success": 0,
+            "errors": 0,
+            "current_batch": 0,
+            "total_batches": 0,
+            "last_error": None,
+            "errors_list": [],
+        }
+
+        log_id = await self._create_sync_log("full")
+        self._current_log_id = log_id
 
         try:
             logger.info("Starting full sync from Grants.gov...")
@@ -269,8 +322,18 @@ class SyncService:
                     close_dates[int(oid)] = cd
 
             batch_size = 50
+            total_batches = (len(items) + batch_size - 1) // batch_size
+            self.sync_stats["total_batches"] = total_batches
+
             for i in range(0, len(items), batch_size):
+                if self._cancel_requested:
+                    logger.info("Sync cancelled by user")
+                    self.sync_stats["cancelled"] = True
+                    await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
+                    return
+
                 batch = items[i:i + batch_size]
+                self.sync_stats["current_batch"] = i // batch_size + 1
 
                 # Fetch details concurrently (bounded by semaphore)
                 detail_tasks = []
@@ -282,18 +345,23 @@ class SyncService:
                         )
 
                 await asyncio.gather(*detail_tasks, return_exceptions=True)
-                logger.info(f"Synced batch {i // batch_size + 1}, progress: {min(i + batch_size, len(items))}/{len(items)}")
+                logger.info(f"Synced batch {i // batch_size + 1}/{total_batches}, progress: {min(i + batch_size, len(items))}/{len(items)}")
 
             await cache_service.invalidate_all()
             self.last_sync = datetime.utcnow()
             self.sync_stats["completed"] = self.last_sync.isoformat()
             logger.info(f"Full sync completed: {self.sync_stats}")
+            await self._finish_sync_log(log_id, "completed", self.sync_stats)
 
         except Exception as e:
             logger.error(f"Full sync failed: {e}", exc_info=True)
             self.sync_stats["error"] = str(e)
+            self.sync_stats["last_error"] = str(e)
+            await self._finish_sync_log(log_id, "failed", self.sync_stats, str(e))
         finally:
             self.is_syncing = False
+            self._cancel_requested = False
+            self._current_log_id = None
 
     async def _fetch_and_upsert(self, opp_id: int, close_date_str: str | None = None):
         try:
@@ -308,9 +376,19 @@ class SyncService:
                         self.sync_stats["success"] = self.sync_stats.get("success", 0) + 1
                     else:
                         self.sync_stats["errors"] = self.sync_stats.get("errors", 0) + 1
+                        self._add_error(opp_id, "Upsert returned None")
         except Exception as e:
             logger.error(f"Error fetching/upserting opportunity {opp_id}: {e}")
             self.sync_stats["errors"] = self.sync_stats.get("errors", 0) + 1
+            self._add_error(opp_id, str(e))
+
+    def _add_error(self, opp_id: int, message: str):
+        errors_list = self.sync_stats.get("errors_list", [])
+        errors_list.append({"opp_id": opp_id, "message": message[:200]})
+        if len(errors_list) > 20:
+            errors_list = errors_list[-20:]
+        self.sync_stats["errors_list"] = errors_list
+        self.sync_stats["last_error"] = f"Opp {opp_id}: {message[:200]}"
 
     async def incremental_sync(self):
         """Fetch only recently changed opportunities."""
@@ -319,12 +397,34 @@ class SyncService:
             return
 
         self.is_syncing = True
-        self.sync_stats = {"started": datetime.utcnow().isoformat(), "type": "incremental", "total": 0, "success": 0, "errors": 0}
+        self._cancel_requested = False
+        self.sync_stats = {
+            "started": datetime.utcnow().isoformat(),
+            "type": "incremental",
+            "total": 0,
+            "success": 0,
+            "errors": 0,
+            "current_batch": 0,
+            "total_batches": 10,
+            "last_error": None,
+            "errors_list": [],
+        }
+
+        log_id = await self._create_sync_log("incremental")
+        self._current_log_id = log_id
 
         try:
             logger.info("Starting incremental sync...")
             # Fetch first few pages of recently posted/forecasted
             for page in range(1, 11):  # First 10 pages = 250 opportunities
+                if self._cancel_requested:
+                    logger.info("Sync cancelled by user")
+                    self.sync_stats["cancelled"] = True
+                    await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
+                    return
+
+                self.sync_stats["current_batch"] = page
+
                 result = await self.client.search(page_number=page, rows_per_page=25)
                 items = result.get("oppHits", [])
                 if not items:
@@ -351,12 +451,17 @@ class SyncService:
             self.last_sync = datetime.utcnow()
             self.sync_stats["completed"] = self.last_sync.isoformat()
             logger.info(f"Incremental sync completed: {self.sync_stats}")
+            await self._finish_sync_log(log_id, "completed", self.sync_stats)
 
         except Exception as e:
             logger.error(f"Incremental sync failed: {e}", exc_info=True)
             self.sync_stats["error"] = str(e)
+            self.sync_stats["last_error"] = str(e)
+            await self._finish_sync_log(log_id, "failed", self.sync_stats, str(e))
         finally:
             self.is_syncing = False
+            self._cancel_requested = False
+            self._current_log_id = None
 
 
 sync_service = SyncService()

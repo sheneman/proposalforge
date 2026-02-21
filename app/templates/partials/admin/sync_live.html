@@ -1,0 +1,120 @@
+{% if is_syncing %}
+<div class="d-flex align-items-center mb-3">
+    <span class="badge bg-primary fs-6 me-3">
+        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        Syncing
+    </span>
+    <span class="text-muted">
+        {{ stats.get("type", "unknown") | title }} sync in progress
+    </span>
+</div>
+
+<!-- Progress bar -->
+{% set total = stats.get("total", 0) %}
+{% set success = stats.get("success", 0) %}
+{% set errors = stats.get("errors", 0) %}
+{% set processed = success + errors %}
+{% set pct = ((processed / total * 100) | round(1)) if total > 0 else 0 %}
+
+<div class="progress mb-3" style="height: 24px;">
+    <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
+         role="progressbar"
+         style="width: {{ pct }}%"
+         aria-valuenow="{{ processed }}"
+         aria-valuemin="0"
+         aria-valuemax="{{ total }}">
+        {{ pct }}%
+    </div>
+</div>
+
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold">{{ processed }} / {{ total }}</div>
+        <small class="text-muted">Items Processed</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold">{{ stats.get("current_batch", 0) }} / {{ stats.get("total_batches", 0) }}</div>
+        <small class="text-muted">Batch</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-success">{{ success }}</div>
+        <small class="text-muted">Success</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-danger">{{ errors }}</div>
+        <small class="text-muted">Errors</small>
+    </div>
+    <div class="col">
+        {% if elapsed %}
+        <div class="fw-bold">{{ elapsed | int }}s</div>
+        {% else %}
+        <div class="fw-bold">-</div>
+        {% endif %}
+        <small class="text-muted">Elapsed</small>
+    </div>
+</div>
+
+{% if stats.get("last_error") %}
+<div class="alert alert-warning py-2 small mb-3">
+    <i class="bi bi-exclamation-triangle"></i> Last error: {{ stats.get("last_error") }}
+</div>
+{% endif %}
+
+<div class="text-end">
+    <button class="btn btn-danger btn-sm"
+            hx-post="/admin/sync/cancel"
+            hx-target="#sync-live"
+            hx-swap="innerHTML">
+        <i class="bi bi-stop-circle"></i> Cancel Sync
+    </button>
+</div>
+
+{% else %}
+
+<div class="d-flex align-items-center mb-3">
+    {% if stats.get("error") %}
+    <span class="badge bg-danger fs-6 me-3">Error</span>
+    <span class="text-muted">Last sync failed: {{ stats.get("error", "")[:100] }}</span>
+    {% elif last_sync %}
+    <span class="badge bg-success fs-6 me-3">Idle</span>
+    <span class="text-muted">Last sync: {{ last_sync.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+    {% else %}
+    <span class="badge bg-secondary fs-6 me-3">Idle</span>
+    <span class="text-muted">No sync has been run yet</span>
+    {% endif %}
+</div>
+
+{% if stats.get("completed") %}
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold">{{ stats.get("total", 0) }}</div>
+        <small class="text-muted">Total Items</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-success">{{ stats.get("success", 0) }}</div>
+        <small class="text-muted">Success</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-danger">{{ stats.get("errors", 0) }}</div>
+        <small class="text-muted">Errors</small>
+    </div>
+</div>
+{% endif %}
+
+<div class="d-flex gap-2">
+    <button class="btn btn-primary btn-sm"
+            hx-post="/admin/sync/trigger?full=true"
+            hx-target="#sync-live"
+            hx-swap="innerHTML"
+            onclick="return confirmFullSync(event)">
+        <i class="bi bi-arrow-repeat"></i> Full Sync
+    </button>
+    <button class="btn btn-outline-primary btn-sm"
+            hx-post="/admin/sync/trigger?full=false"
+            hx-target="#sync-live"
+            hx-swap="innerHTML">
+        <i class="bi bi-arrow-clockwise"></i> Incremental Sync
+    </button>
+</div>
+
+{% endif %}

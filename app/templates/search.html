@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Search - ProposalForge{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Left Sidebar: Faceted Filters -->
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-navy text-white">
+                <h6 class="mb-0"><i class="bi bi-funnel"></i> Filters</h6>
+            </div>
+            <div class="card-body" id="filters-panel">
+                <form id="search-filters"
+                      hx-get="/search"
+                      hx-target="#search-results"
+                      hx-push-url="true"
+                      hx-trigger="change"
+                      hx-indicator="#loading-indicator">
+
+                    <!-- Search box -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Keyword</label>
+                        <input type="text" class="form-control form-control-sm" name="q"
+                               value="{{ query }}" placeholder="Search..."
+                               hx-trigger="keyup changed delay:500ms">
+                    </div>
+
+                    <!-- Status -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Status</label>
+                        {% set active_statuses = status.split(',') if status else ['posted', 'forecasted'] %}
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="status" value="posted"
+                                   id="status-posted" {{ 'checked' if 'posted' in active_statuses }}>
+                            <label class="form-check-label small" for="status-posted">Posted</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="status" value="forecasted"
+                                   id="status-forecasted" {{ 'checked' if 'forecasted' in active_statuses }}>
+                            <label class="form-check-label small" for="status-forecasted">Forecasted</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="status" value="closed"
+                                   id="status-closed" {{ 'checked' if 'closed' in active_statuses }}>
+                            <label class="form-check-label small" for="status-closed">Closed</label>
+                        </div>
+                    </div>
+
+                    <!-- Agencies -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Agency</label>
+                        <input type="text" class="form-control form-control-sm mb-2"
+                               id="agency-filter-search" placeholder="Filter agencies..."
+                               oninput="filterAgencies(this.value)">
+                        <div class="agency-list" style="max-height: 200px; overflow-y: auto;">
+                            {% for ag in facets.agencies[:20] %}
+                            <div class="form-check agency-item">
+                                <input class="form-check-input" type="checkbox" name="agency"
+                                       value="{{ ag.code }}" id="agency-{{ ag.code }}"
+                                       {{ 'checked' if ag.code in (agency.split(',') if agency else []) }}>
+                                <label class="form-check-label small" for="agency-{{ ag.code }}">
+                                    {{ ag.name }} <span class="badge bg-light text-dark">{{ ag.count }}</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Categories -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Funding Category</label>
+                        <div style="max-height: 200px; overflow-y: auto;">
+                            {% for cat in facets.categories %}
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="category"
+                                       value="{{ cat.code }}" id="cat-{{ cat.code }}"
+                                       {{ 'checked' if cat.code in (category.split(',') if category else []) }}>
+                                <label class="form-check-label small" for="cat-{{ cat.code }}">
+                                    {{ cat.name }} <span class="badge bg-light text-dark">{{ cat.count }}</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Deadline -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Deadline</label>
+                        <div class="small text-muted mb-1">
+                            This week: {{ facets.deadlines.this_week }} |
+                            This month: {{ facets.deadlines.this_month }}
+                        </div>
+                    </div>
+
+                    <!-- Award Ceiling -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Award Ceiling</label>
+                        <div class="small text-muted">
+                            &lt;$100K: {{ facets.ceilings.under_100k }} |
+                            $100K-$500K: {{ facets.ceilings['100k_500k'] }}<br>
+                            $500K-$1M: {{ facets.ceilings['500k_1m'] }} |
+                            &gt;$1M: {{ facets.ceilings.over_1m }}
+                        </div>
+                    </div>
+
+                    <!-- Sort -->
+                    <input type="hidden" name="sort_by" value="{{ sort_by }}">
+                    <input type="hidden" name="sort_order" value="{{ sort_order }}">
+                    <input type="hidden" name="page" value="1" id="page-input">
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content: Search Results -->
+    <div class="col-md-9">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+                <h5 class="text-navy mb-0">
+                    <span id="result-count">{{ total }}</span> Opportunities Found
+                </h5>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <div id="loading-indicator" class="htmx-indicator">
+                    <div class="spinner-border spinner-border-sm text-navy" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <select class="form-select form-select-sm" style="width: auto;"
+                        onchange="updateSort(this.value)">
+                    <option value="close_date:asc" {{ 'selected' if sort_by == 'close_date' and sort_order == 'asc' }}>Deadline (soonest)</option>
+                    <option value="close_date:desc" {{ 'selected' if sort_by == 'close_date' and sort_order == 'desc' }}>Deadline (latest)</option>
+                    <option value="posting_date:desc" {{ 'selected' if sort_by == 'posting_date' and sort_order == 'desc' }}>Newest first</option>
+                    <option value="award_ceiling:desc" {{ 'selected' if sort_by == 'award_ceiling' and sort_order == 'desc' }}>Award (highest)</option>
+                    <option value="title:asc" {{ 'selected' if sort_by == 'title' and sort_order == 'asc' }}>Title A-Z</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="search-results">
+            {% include "partials/search_results.html" %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/search.js"></script>
+{% endblock %}

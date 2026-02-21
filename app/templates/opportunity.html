@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}{{ opp.title }} - ProposalForge{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 mb-3">
+        <a href="/search" class="text-navy text-decoration-none">
+            <i class="bi bi-arrow-left"></i> Back to Search
+        </a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body">
+                <h4 class="text-navy mb-2">{{ opp.title }}</h4>
+
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    {% if opp.status == 'posted' %}
+                    <span class="badge bg-success fs-6">Posted</span>
+                    {% elif opp.status == 'forecasted' %}
+                    <span class="badge bg-info fs-6">Forecasted</span>
+                    {% elif opp.status == 'closed' %}
+                    <span class="badge bg-secondary fs-6">Closed</span>
+                    {% endif %}
+
+                    {% for cat in opp.funding_categories %}
+                    <span class="badge bg-light text-navy">{{ cat.category_name }}</span>
+                    {% endfor %}
+
+                    {% if opp.is_team_based %}
+                    <span class="badge bg-purple-light">Team-Based</span>
+                    {% endif %}
+                    {% if opp.is_multi_institution %}
+                    <span class="badge bg-purple-light">Multi-Institution</span>
+                    {% endif %}
+                    {% if opp.is_multi_disciplinary %}
+                    <span class="badge bg-purple-light">Multi-Disciplinary</span>
+                    {% endif %}
+                    {% if opp.is_multi_jurisdiction %}
+                    <span class="badge bg-purple-light">Multi-Jurisdiction</span>
+                    {% endif %}
+                </div>
+
+                <!-- Metadata Grid -->
+                <div class="row g-3 mb-4">
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Opportunity Number</small>
+                            <strong>{{ opp.opportunity_number or 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Agency</small>
+                            <strong>{{ opp.agency.name if opp.agency else opp.agency_code or 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Posted Date</small>
+                            <strong>{{ opp.posting_date.strftime('%B %d, %Y') if opp.posting_date else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Close Date</small>
+                            <strong>
+                                {% if opp.close_date %}
+                                    {{ opp.close_date.strftime('%B %d, %Y') }}
+                                {% elif opp.close_date_description %}
+                                    {{ opp.close_date_description }}
+                                {% else %}
+                                    N/A
+                                {% endif %}
+                            </strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Award Ceiling</small>
+                            <strong>{{ "$%s" | format("{:,.0f}".format(opp.award_ceiling)) if opp.award_ceiling else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Award Floor</small>
+                            <strong>{{ "$%s" | format("{:,.0f}".format(opp.award_floor)) if opp.award_floor else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Estimated Total Funding</small>
+                            <strong>{{ "$%s" | format("{:,.0f}".format(opp.estimated_total_funding)) if opp.estimated_total_funding else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Expected Awards</small>
+                            <strong>{{ opp.expected_number_of_awards or 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    {% if opp.cost_sharing is not none %}
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Cost Sharing</small>
+                            <strong>{{ 'Yes' if opp.cost_sharing else 'No' }}</strong>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Description -->
+                {% if opp.synopsis_description %}
+                <h5 class="text-navy">Description</h5>
+                <div class="description-text mb-4">
+                    {{ opp.synopsis_description | safe }}
+                </div>
+                {% endif %}
+
+                <!-- ALN Numbers -->
+                {% if opp.alns %}
+                <h5 class="text-navy">ALN/CFDA Numbers</h5>
+                <ul class="list-group list-group-flush mb-4">
+                    {% for aln in opp.alns %}
+                    <li class="list-group-item px-0">
+                        <strong>{{ aln.aln_number }}</strong>
+                        {% if aln.program_title %} &mdash; {{ aln.program_title }}{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+
+                <!-- Applicant Types -->
+                {% if opp.applicant_types %}
+                <h5 class="text-navy">Eligible Applicant Types</h5>
+                <div class="d-flex flex-wrap gap-1 mb-4">
+                    {% for at in opp.applicant_types %}
+                    <span class="badge bg-light text-dark">{{ at.type_name }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <!-- Funding Instruments -->
+                {% if opp.funding_instruments %}
+                <h5 class="text-navy">Funding Instruments</h5>
+                <div class="d-flex flex-wrap gap-1 mb-4">
+                    {% for fi in opp.funding_instruments %}
+                    <span class="badge bg-light text-dark">{{ fi.instrument_name }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="col-md-4">
+        <!-- Actions -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body">
+                {% if opp.grants_gov_url %}
+                <a href="{{ opp.grants_gov_url }}" target="_blank" rel="noopener"
+                   class="btn btn-navy w-100 mb-2">
+                    <i class="bi bi-box-arrow-up-right"></i> View on Grants.gov
+                </a>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Contact Info -->
+        {% if opp.contact_name or opp.contact_email or opp.contact_phone %}
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white border-0">
+                <h6 class="mb-0 text-navy"><i class="bi bi-person"></i> Contact Information</h6>
+            </div>
+            <div class="card-body">
+                {% if opp.contact_name %}
+                <div class="mb-2">
+                    <small class="text-muted d-block">Name</small>
+                    {{ opp.contact_name }}
+                </div>
+                {% endif %}
+                {% if opp.contact_email %}
+                <div class="mb-2">
+                    <small class="text-muted d-block">Email</small>
+                    <a href="mailto:{{ opp.contact_email }}">{{ opp.contact_email }}</a>
+                </div>
+                {% endif %}
+                {% if opp.contact_phone %}
+                <div class="mb-2">
+                    <small class="text-muted d-block">Phone</small>
+                    {{ opp.contact_phone }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

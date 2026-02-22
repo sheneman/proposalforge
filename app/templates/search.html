@@ -44,6 +44,11 @@
                                    id="status-closed" {{ 'checked' if 'closed' in active_statuses }}>
                             <label class="form-check-label small" for="status-closed">Closed</label>
                         </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="status" value="archived"
+                                   id="status-archived" {{ 'checked' if 'archived' in active_statuses }}>
+                            <label class="form-check-label small" for="status-archived">Archived</label>
+                        </div>
                     </div>
 
                     <!-- Agencies -->

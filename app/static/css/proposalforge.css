@@ -184,7 +184,9 @@ footer a:hover {
 .chat-container {
     display: flex;
     flex-direction: column;
-    height: 600px;
+    height: calc(100vh - 250px);
+    max-height: 700px;
+    min-height: 350px;
 }
 
 .chat-messages {

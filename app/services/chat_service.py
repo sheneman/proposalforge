@@ -216,20 +216,53 @@ def _serialize_value(val):
     return val
 
 
-def _detect_response_format(columns: list[str], rows: list[tuple]) -> str:
+def _detect_response_format(columns: list[str], rows: list[tuple], force_chart: bool = False) -> str:
     """Detect the best display format for query results."""
     if not rows:
         return "empty"
-    if len(rows) == 1 and len(columns) == 1:
+    if len(rows) == 1 and len(columns) == 1 and not force_chart:
         return "summary"
-    if len(columns) == 2 and len(rows) <= 30:
-        # Check if second column is numeric
+    # Chart: 2 columns with numeric second column, or forced by user
+    if len(columns) >= 2 and len(rows) <= 50:
         try:
             float(rows[0][1])
-            return "chart"
+            if force_chart or (len(columns) == 2 and len(rows) <= 30):
+                return "chart"
         except (ValueError, TypeError):
             pass
+    if force_chart and len(columns) >= 2 and len(rows) >= 2:
+        return "chart"
     return "table"
+
+
+# Chart type detection from user message
+_CHART_TYPE_PATTERNS = {
+    "pie": re.compile(r'\b(pie\s*(chart)?|donut|doughnut)\b', re.IGNORECASE),
+    "line": re.compile(r'\b(line\s*(chart|graph|plot)?|trend|over\s+time|time\s*series|monthly|yearly|per\s+month|per\s+year)\b', re.IGNORECASE),
+    "scatter": re.compile(r'\b(scatter\s*(plot|chart)?|correlation)\b', re.IGNORECASE),
+    "doughnut": re.compile(r'\b(doughnut|donut)\b', re.IGNORECASE),
+}
+
+_PLOT_PATTERN = re.compile(r'\b(plot|chart|graph|visuali[zs]e|draw)\b', re.IGNORECASE)
+
+
+def _detect_chart_type(message: str) -> str:
+    """Detect requested chart type from user message."""
+    # Check doughnut before pie since donut also matches pie pattern
+    if _CHART_TYPE_PATTERNS["doughnut"].search(message):
+        return "doughnut"
+    if _CHART_TYPE_PATTERNS["pie"].search(message):
+        return "pie"
+    if _CHART_TYPE_PATTERNS["line"].search(message):
+        return "line"
+    if _CHART_TYPE_PATTERNS["scatter"].search(message):
+        return "scatter"
+    return "bar"
+
+
+def _wants_chart(message: str) -> bool:
+    """Check if user is explicitly requesting a visual chart."""
+    return bool(_PLOT_PATTERN.search(message))
 
 
 class ChatService:
@@ -429,7 +462,9 @@ class ChatService:
             }
 
         # Format results
-        return self._format_results(assistant_text, sql, columns, rows)
+        force_chart = _wants_chart(message)
+        chart_type = _detect_chart_type(message) if force_chart else "bar"
+        return self._format_results(assistant_text, sql, columns, rows, force_chart=force_chart, chart_type=chart_type)
 
     def _extract_sql(self, text_content: str) -> str | None:
         """Extract SQL from LLM response."""
@@ -506,12 +541,13 @@ class ChatService:
         sql: str,
         columns: list[str],
         rows: list[tuple],
+        force_chart: bool = False,
+        chart_type: str = "bar",
     ) -> dict[str, Any]:
         """Format query results into the appropriate response type."""
-        fmt = _detect_response_format(columns, rows)
+        fmt = _detect_response_format(columns, rows, force_chart=force_chart)
 
         if fmt == "empty":
-            # Strip SQL block from text for display
             clean_text = re.sub(r'```sql.*?```', '', assistant_text, flags=re.DOTALL).strip()
             return {
                 "type": "text",
@@ -522,12 +558,8 @@ class ChatService:
         if fmt == "summary":
             value = _serialize_value(rows[0][0])
             clean_text = re.sub(r'```sql.*?```', '', assistant_text, flags=re.DOTALL).strip()
-            # Try to format as number if it's numeric
             if isinstance(value, (int, float)):
-                if value > 1000:
-                    formatted = f"{value:,.0f}"
-                else:
-                    formatted = f"{value:,.2f}"
+                formatted = f"{value:,.0f}" if value > 1000 else f"{value:,.2f}"
                 return {
                     "type": "summary",
                     "content": clean_text,
@@ -547,17 +579,39 @@ class ChatService:
             labels = [str(_serialize_value(r[0])) for r in rows]
             values = [float(_serialize_value(r[1])) for r in rows]
             clean_text = re.sub(r'```sql.*?```', '', assistant_text, flags=re.DOTALL).strip()
+
+            # Color palette for pie/doughnut charts
+            palette = [
+                "#1a365d", "#2c5282", "#d4a843", "#e8c97a", "#2d8659",
+                "#c53030", "#6b46c1", "#2b6cb0", "#dd6b20", "#38a169",
+                "#805ad5", "#d69e2e", "#3182ce", "#e53e3e", "#319795",
+            ]
+
+            dataset = {
+                "label": columns[1],
+                "data": values,
+            }
+
+            if chart_type in ("pie", "doughnut"):
+                dataset["backgroundColor"] = palette[:len(values)]
+            elif chart_type == "line":
+                dataset["borderColor"] = "#2c5282"
+                dataset["backgroundColor"] = "rgba(44, 82, 130, 0.1)"
+                dataset["fill"] = True
+                dataset["tension"] = 0.3
+            elif chart_type == "scatter":
+                dataset["backgroundColor"] = "#2c5282"
+            else:
+                dataset["backgroundColor"] = "#2c5282"
+                dataset["borderRadius"] = 4
+
             return {
                 "type": "chart",
                 "content": clean_text,
+                "chart_type": chart_type,
                 "chart_data": {
                     "labels": labels,
-                    "datasets": [{
-                        "label": columns[1],
-                        "data": values,
-                        "backgroundColor": "#2c5282",
-                        "borderRadius": 4,
-                    }],
+                    "datasets": [dataset],
                 },
                 "sql": sql,
             }

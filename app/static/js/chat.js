@@ -119,11 +119,78 @@
         scrollToBottom();
     }
 
-    function appendChartMessage(content, chartData, sql) {
+    function buildChartOptions(chartType, chartData) {
+        var isPolar = (chartType === 'pie' || chartType === 'doughnut');
+
+        if (isPolar) {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'right',
+                        labels: { font: { size: 10 }, boxWidth: 12 },
+                    },
+                },
+            };
+        }
+
+        if (chartType === 'line') {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { display: false } },
+                    y: { grid: { color: 'rgba(0,0,0,0.05)' }, beginAtZero: true },
+                },
+            };
+        }
+
+        if (chartType === 'scatter') {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(0,0,0,0.05)' } },
+                    y: { grid: { color: 'rgba(0,0,0,0.05)' } },
+                },
+            };
+        }
+
+        // Bar chart (default)
+        return {
+            indexAxis: chartData.labels.length > 6 ? 'y' : 'x',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { grid: { display: false }, beginAtZero: true },
+                y: {
+                    grid: { display: false },
+                    ticks: {
+                        font: { size: 10 },
+                        callback: function(v, i) {
+                            var label = this.getLabelForValue(v);
+                            if (typeof label === 'string' && label.length > 25) {
+                                return label.substring(0, 25) + '...';
+                            }
+                            return label;
+                        },
+                    },
+                },
+            },
+        };
+    }
+
+    function appendChartMessage(content, chartData, sql, chartType) {
         const container = document.getElementById('chat-messages');
         const bubble = document.createElement('div');
         bubble.className = 'chat-bubble chat-assistant';
 
+        chartType = chartType || 'bar';
         chatChartCounter++;
         const canvasId = 'chat-chart-' + chatChartCounter;
 
@@ -140,30 +207,9 @@
             const ctx = document.getElementById(canvasId);
             if (ctx) {
                 new Chart(ctx, {
-                    type: 'bar',
+                    type: chartType,
                     data: chartData,
-                    options: {
-                        indexAxis: chartData.labels.length > 6 ? 'y' : 'x',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                            x: { grid: { display: false }, beginAtZero: true },
-                            y: {
-                                grid: { display: false },
-                                ticks: {
-                                    font: { size: 10 },
-                                    callback: function(v, i) {
-                                        const label = this.getLabelForValue(v);
-                                        if (typeof label === 'string' && label.length > 25) {
-                                            return label.substring(0, 25) + '...';
-                                        }
-                                        return label;
-                                    },
-                                },
-                            },
-                        },
-                    },
+                    options: buildChartOptions(chartType, chartData),
                 });
             }
         });
@@ -180,7 +226,7 @@
                 appendTableMessage(data.content, data.columns, data.rows, data.sql);
                 break;
             case 'chart':
-                appendChartMessage(data.content, data.chart_data, data.sql);
+                appendChartMessage(data.content, data.chart_data, data.sql, data.chart_type || 'bar');
                 break;
             case 'text':
             default:

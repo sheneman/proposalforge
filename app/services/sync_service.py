@@ -372,15 +372,23 @@ class SyncService:
                 self.sync_stats["current_batch"] = i // batch_size + 1
 
                 # Fetch details concurrently (bounded by semaphore)
-                detail_tasks = []
+                fetch_tasks = []
                 for item in batch:
                     opp_id = item.get("id")
                     if opp_id:
-                        detail_tasks.append(
-                            self._fetch_and_upsert(int(opp_id), close_dates.get(int(opp_id)))
+                        fetch_tasks.append(
+                            self._fetch_detail(int(opp_id), close_dates.get(int(opp_id)))
                         )
 
-                await asyncio.gather(*detail_tasks, return_exceptions=True)
+                details = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+                # Write to DB sequentially to avoid deadlocks
+                for detail_result in details:
+                    if isinstance(detail_result, Exception):
+                        continue  # already logged in _fetch_detail
+                    if detail_result is not None:
+                        await self._upsert_detail(detail_result)
+
                 logger.info(f"Synced batch {i // batch_size + 1}/{total_batches}, progress: {min(i + batch_size, len(items))}/{len(items)}")
 
             await cache_service.invalidate_all()
@@ -399,12 +407,24 @@ class SyncService:
             self._cancel_requested = False
             self._current_log_id = None
 
-    async def _fetch_and_upsert(self, opp_id: int, close_date_str: str | None = None):
+    async def _fetch_detail(self, opp_id: int, close_date_str: str | None = None) -> dict | None:
+        """Fetch opportunity detail from API (concurrent-safe, no DB writes)."""
         try:
             detail = await self.client.fetch_opportunity(opp_id)
-            # Inject closeDate from search results if available
             if close_date_str:
                 detail["_search_close_date"] = close_date_str
+            detail["_opp_id"] = opp_id
+            return detail
+        except Exception as e:
+            logger.error(f"Error fetching opportunity {opp_id}: {e}")
+            self.sync_stats["errors"] = self.sync_stats.get("errors", 0) + 1
+            self._add_error(opp_id, str(e))
+            return None
+
+    async def _upsert_detail(self, detail: dict):
+        """Write a fetched detail to DB (must be called sequentially)."""
+        opp_id = detail.get("_opp_id", 0)
+        try:
             async with async_session() as session:
                 async with session.begin():
                     result = await self._upsert_opportunity(session, detail)
@@ -414,7 +434,7 @@ class SyncService:
                         self.sync_stats["errors"] = self.sync_stats.get("errors", 0) + 1
                         self._add_error(opp_id, "Upsert returned None")
         except Exception as e:
-            logger.error(f"Error fetching/upserting opportunity {opp_id}: {e}")
+            logger.error(f"Error upserting opportunity {opp_id}: {e}")
             self.sync_stats["errors"] = self.sync_stats.get("errors", 0) + 1
             self._add_error(opp_id, str(e))
 
@@ -472,7 +492,9 @@ class SyncService:
                 for item in items:
                     opp_id = item.get("id")
                     if opp_id:
-                        await self._fetch_and_upsert(int(opp_id), item.get("closeDate"))
+                        detail = await self._fetch_detail(int(opp_id), item.get("closeDate"))
+                        if detail:
+                            await self._upsert_detail(detail)
 
             # Mark past-deadline opportunities as closed
             async with async_session() as session:

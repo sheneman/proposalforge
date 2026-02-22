@@ -302,16 +302,61 @@ class SyncService:
             logger.error(f"Error upserting opportunity: {e}", exc_info=True)
             return None
 
-    async def full_sync(self):
+    async def _run_fetch_phase(self, items: list[dict], close_dates: dict, log_id: int):
+        """Phase 2: fetch details and upsert. Shared by full_sync and refresh_sync."""
+        self.sync_stats["phase"] = "fetching"
+        self.sync_stats["total"] = len(items)
+
+        batch_size = 50
+        total_batches = (len(items) + batch_size - 1) // batch_size
+        self.sync_stats["total_batches"] = total_batches
+
+        for i in range(0, len(items), batch_size):
+            if self._cancel_requested:
+                logger.info("Sync cancelled by user")
+                self.sync_stats["cancelled"] = True
+                await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
+                return
+
+            batch = items[i:i + batch_size]
+            self.sync_stats["current_batch"] = i // batch_size + 1
+
+            # Fetch details concurrently (bounded by semaphore)
+            fetch_tasks = []
+            for item in batch:
+                opp_id = item.get("id") if isinstance(item, dict) else item
+                if opp_id:
+                    cd = close_dates.get(int(opp_id))
+                    fetch_tasks.append(self._fetch_detail(int(opp_id), cd))
+
+            details = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+            # Write to DB sequentially to avoid deadlocks
+            for detail_result in details:
+                if isinstance(detail_result, Exception):
+                    continue
+                if detail_result is not None:
+                    await self._upsert_detail(detail_result)
+
+            logger.info(f"Synced batch {i // batch_size + 1}/{total_batches}, progress: {min(i + batch_size, len(items))}/{len(items)}")
+
+        await cache_service.invalidate_all()
+        self.last_sync = datetime.utcnow()
+        self.sync_stats["completed"] = self.last_sync.isoformat()
+        logger.info(f"Sync completed: {self.sync_stats}")
+        await self._finish_sync_log(log_id, "completed", self.sync_stats)
+
+    async def full_sync(self, skip_discovery: bool = False):
         if self.is_syncing:
             logger.warning("Sync already in progress")
             return
 
         self.is_syncing = True
         self._cancel_requested = False
+        sync_type = "refresh" if skip_discovery else "full"
         self.sync_stats = {
             "started": datetime.utcnow().isoformat(),
-            "type": "full",
+            "type": sync_type,
             "total": 0,
             "success": 0,
             "errors": 0,
@@ -321,81 +366,55 @@ class SyncService:
             "errors_list": [],
         }
 
-        log_id = await self._create_sync_log("full")
+        log_id = await self._create_sync_log(sync_type)
         self._current_log_id = log_id
 
         try:
-            logger.info("Starting full sync from Grants.gov...")
-            self.sync_stats["phase"] = "listing"
+            if skip_discovery:
+                # Use existing opportunity IDs from the database
+                logger.info("Starting refresh sync (skip discovery)...")
+                self.sync_stats["phase"] = "fetching"
+                async with async_session() as session:
+                    result = await session.execute(
+                        select(Opportunity.opportunity_id)
+                    )
+                    opp_ids = [row[0] for row in result.all()]
 
-            def _on_listing_progress(status: str, fetched: int, estimated: int):
+                items = [{"id": oid} for oid in opp_ids]
+                logger.info(f"Found {len(items)} existing opportunities to refresh")
+            else:
+                logger.info("Starting full sync from Grants.gov...")
                 self.sync_stats["phase"] = "listing"
-                self.sync_stats["listing_status"] = status
-                self.sync_stats["listing_fetched"] = fetched
-                self.sync_stats["listing_estimated"] = estimated
 
-            items = await self.client.fetch_all_opportunities(
-                progress_callback=_on_listing_progress,
-                cancel_check=lambda: self._cancel_requested,
-            )
+                def _on_listing_progress(status: str, fetched: int, estimated: int):
+                    self.sync_stats["phase"] = "listing"
+                    self.sync_stats["listing_status"] = status
+                    self.sync_stats["listing_fetched"] = fetched
+                    self.sync_stats["listing_estimated"] = estimated
 
-            if self._cancel_requested:
-                logger.info("Sync cancelled during listing phase")
-                self.sync_stats["cancelled"] = True
-                await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
-                return
+                items = await self.client.fetch_all_opportunities(
+                    progress_callback=_on_listing_progress,
+                    cancel_check=lambda: self._cancel_requested,
+                )
 
-            self.sync_stats["phase"] = "fetching"
-            self.sync_stats["total"] = len(items)
-            logger.info(f"Found {len(items)} opportunities to sync")
-
-            # Build a map of search hit close dates
-            close_dates = {}
-            for item in items:
-                oid = item.get("id")
-                cd = item.get("closeDate")
-                if oid and cd:
-                    close_dates[int(oid)] = cd
-
-            batch_size = 50
-            total_batches = (len(items) + batch_size - 1) // batch_size
-            self.sync_stats["total_batches"] = total_batches
-
-            for i in range(0, len(items), batch_size):
                 if self._cancel_requested:
-                    logger.info("Sync cancelled by user")
+                    logger.info("Sync cancelled during listing phase")
                     self.sync_stats["cancelled"] = True
                     await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
                     return
 
-                batch = items[i:i + batch_size]
-                self.sync_stats["current_batch"] = i // batch_size + 1
+                logger.info(f"Found {len(items)} opportunities to sync")
 
-                # Fetch details concurrently (bounded by semaphore)
-                fetch_tasks = []
-                for item in batch:
-                    opp_id = item.get("id")
-                    if opp_id:
-                        fetch_tasks.append(
-                            self._fetch_detail(int(opp_id), close_dates.get(int(opp_id)))
-                        )
+            # Build a map of search hit close dates
+            close_dates = {}
+            for item in items:
+                if isinstance(item, dict):
+                    oid = item.get("id")
+                    cd = item.get("closeDate")
+                    if oid and cd:
+                        close_dates[int(oid)] = cd
 
-                details = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-
-                # Write to DB sequentially to avoid deadlocks
-                for detail_result in details:
-                    if isinstance(detail_result, Exception):
-                        continue  # already logged in _fetch_detail
-                    if detail_result is not None:
-                        await self._upsert_detail(detail_result)
-
-                logger.info(f"Synced batch {i // batch_size + 1}/{total_batches}, progress: {min(i + batch_size, len(items))}/{len(items)}")
-
-            await cache_service.invalidate_all()
-            self.last_sync = datetime.utcnow()
-            self.sync_stats["completed"] = self.last_sync.isoformat()
-            logger.info(f"Full sync completed: {self.sync_stats}")
-            await self._finish_sync_log(log_id, "completed", self.sync_stats)
+            await self._run_fetch_phase(items, close_dates, log_id)
 
         except Exception as e:
             logger.error(f"Full sync failed: {e}", exc_info=True)

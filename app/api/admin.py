@@ -43,9 +43,11 @@ async def sync_live(request: Request):
 
 
 @router.post("/sync/trigger", response_class=HTMLResponse)
-async def trigger_sync(request: Request, full: bool = False):
+async def trigger_sync(request: Request, full: bool = False, refresh: bool = False):
     if not sync_service.is_syncing:
-        if full:
+        if refresh:
+            asyncio.create_task(sync_service.full_sync(skip_discovery=True))
+        elif full:
             asyncio.create_task(sync_service.full_sync())
         else:
             asyncio.create_task(sync_service.incremental_sync())

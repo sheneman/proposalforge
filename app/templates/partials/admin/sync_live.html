@@ -158,6 +158,13 @@
             hx-swap="innerHTML">
         <i class="bi bi-arrow-clockwise"></i> Incremental Sync
     </button>
+    <button class="btn btn-outline-secondary btn-sm"
+            hx-post="/admin/sync/trigger?refresh=true"
+            hx-target="#sync-live"
+            hx-swap="innerHTML"
+            title="Re-fetch details for all opportunities already in the database, skipping the discovery phase">
+        <i class="bi bi-database-gear"></i> Refresh Existing
+    </button>
 </div>
 
 {% endif %}

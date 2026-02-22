@@ -577,7 +577,15 @@ class ChatService:
 
         if fmt == "chart":
             labels = [str(_serialize_value(r[0])) for r in rows]
-            values = [float(_serialize_value(r[1])) for r in rows]
+            values = []
+            for r in rows:
+                v = _serialize_value(r[1])
+                if isinstance(v, str):
+                    v = v.replace(",", "")
+                try:
+                    values.append(float(v))
+                except (ValueError, TypeError):
+                    values.append(0.0)
             clean_text = re.sub(r'```sql.*?```', '', assistant_text, flags=re.DOTALL).strip()
 
             # Color palette for pie/doughnut charts

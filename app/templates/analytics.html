@@ -264,20 +264,30 @@
             <div class="tab-pane fade" id="chat-pane" role="tabpanel">
                 <div class="chat-container">
                     <div class="chat-messages" id="chat-messages">
-                        <div class="chat-bubble chat-assistant">
-                            <p class="mb-1">I can help you explore the grant opportunities database. Try asking questions like:</p>
-                            <ul class="mb-0 small">
+                        <div class="chat-bubble chat-assistant" id="chat-welcome">
+                            <p class="mb-2">I can help you explore the grant opportunities database. Try asking questions like:</p>
+                            <ul class="small mb-2">
                                 <li>"How many open opportunities are there?"</li>
                                 <li>"Show me top 10 agencies by total funding"</li>
                                 <li>"List the 5 largest awards closing this month"</li>
                                 <li>"What is the average award ceiling for NSF grants?"</li>
                                 <li>"Which categories have the most team-based opportunities?"</li>
                             </ul>
+                            <p class="mb-2"><i class="bi bi-bar-chart"></i> <strong>Visualizations</strong> &mdash; use words like <em>plot</em>, <em>chart</em>, <em>graph</em>, or <em>visualize</em> to generate charts:</p>
+                            <ul class="small mb-0">
+                                <li>"Plot the top 10 agencies by funding"</li>
+                                <li>"Show a <strong>pie chart</strong> of opportunities by status"</li>
+                                <li>"Graph opportunities posted per month as a <strong>line chart</strong>"</li>
+                                <li>"Visualize funding categories as a <strong>doughnut chart</strong>"</li>
+                            </ul>
                         </div>
                     </div>
                     <form id="chat-form" class="chat-input-form">
                         <div class="input-group">
                             <input type="text" class="form-control" id="chat-input" placeholder="Ask a question about the data..." autocomplete="off">
+                            <button class="btn btn-outline-secondary" type="button" id="chat-clear" title="Clear chat and start over">
+                                <i class="bi bi-trash"></i>
+                            </button>
                             <button class="btn btn-navy" type="submit" id="chat-send">
                                 <i class="bi bi-send"></i>
                             </button>

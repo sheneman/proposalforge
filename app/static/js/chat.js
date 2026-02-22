@@ -271,11 +271,21 @@
         }
     }
 
+    function clearChat() {
+        chatHistory.length = 0;
+        const container = document.getElementById('chat-messages');
+        const welcome = document.getElementById('chat-welcome');
+        // Save welcome message HTML, clear everything, restore it
+        const welcomeHtml = welcome ? welcome.outerHTML : '';
+        container.innerHTML = welcomeHtml;
+    }
+
     // --- Event Listeners ---
 
     document.addEventListener('DOMContentLoaded', function() {
         const form = document.getElementById('chat-form');
         const input = document.getElementById('chat-input');
+        const clearBtn = document.getElementById('chat-clear');
 
         if (form) {
             form.addEventListener('submit', function(e) {
@@ -284,6 +294,13 @@
                 if (!message) return;
                 input.value = '';
                 sendMessage(message);
+            });
+        }
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', function() {
+                clearChat();
+                if (input) input.focus();
             });
         }
     });

@@ -28,6 +28,10 @@ MULTI_JURIS_KEYWORDS = re.compile(
 )
 
 
+SYNC_STATS_KEY = "pf:sync_stats"
+SYNC_STATS_TTL = 3600  # 1 hour max
+
+
 class SyncService:
     def __init__(self):
         self.client = GrantsGovClient()
@@ -36,6 +40,22 @@ class SyncService:
         self.sync_stats: dict = {}
         self._cancel_requested = False
         self._current_log_id: int | None = None
+
+    async def _publish_stats(self):
+        """Write current sync stats to Redis so all workers can read them."""
+        try:
+            import json
+            data = {"is_syncing": self.is_syncing, "stats": self.sync_stats}
+            if self.last_sync:
+                data["last_sync"] = self.last_sync.isoformat()
+            await cache_service.set(SYNC_STATS_KEY, data, SYNC_STATS_TTL)
+        except Exception:
+            pass  # Best-effort; don't break sync over a stats publish failure
+
+    @staticmethod
+    async def get_shared_stats() -> dict | None:
+        """Read sync stats from Redis (cross-worker shared state)."""
+        return await cache_service.get(SYNC_STATS_KEY)
 
     def _parse_date(self, date_str: str | None) -> date | None:
         if not date_str:
@@ -138,6 +158,8 @@ class SyncService:
                     log.success_count = stats.get("success", 0)
                     log.error_count = stats.get("errors", 0)
                     log.error_message = error_msg
+        # Update Redis shared stats to reflect sync is done
+        await self._publish_stats()
 
     def cancel_sync(self):
         """Request cancellation of the running sync."""

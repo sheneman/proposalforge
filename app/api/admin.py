@@ -25,7 +25,7 @@ async def admin_dashboard(request: Request):
 
 @router.get("/sync/live", response_class=HTMLResponse)
 async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
-    # Check in-memory state first (works in single-worker and for the worker running the sync)
+    # If this worker owns the sync, publish stats to Redis and return them
     if sync_service.is_syncing:
         stats = dict(sync_service.sync_stats)
         elapsed = None
@@ -35,6 +35,8 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
                 elapsed = (datetime.utcnow() - started).total_seconds()
             except (ValueError, TypeError):
                 pass
+        # Publish to Redis so other workers can read the live stats
+        await sync_service._publish_stats()
         return templates.TemplateResponse("partials/admin/sync_live.html", {
             "request": request,
             "is_syncing": True,
@@ -43,22 +45,17 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
             "last_sync": sync_service.last_sync,
         })
 
-    # Fallback: check DB for a running sync (handles multi-worker where another worker owns the sync)
-    running_log = (await db.execute(
-        select(SyncLog).where(SyncLog.status == "running").order_by(SyncLog.started_at.desc()).limit(1)
-    )).scalar_one_or_none()
-
-    if running_log:
-        elapsed = (datetime.utcnow() - running_log.started_at).total_seconds() if running_log.started_at else None
-        stats = {
-            "type": running_log.sync_type or "full",
-            "phase": "fetching",
-            "total": running_log.total_items or 0,
-            "success": running_log.success_count or 0,
-            "errors": running_log.error_count or 0,
-            "skipped": 0,
-            "started": running_log.started_at.isoformat() if running_log.started_at else None,
-        }
+    # This worker doesn't own the sync — check Redis for shared stats from the worker that does
+    shared = await sync_service.get_shared_stats()
+    if shared and shared.get("is_syncing"):
+        stats = shared["stats"]
+        elapsed = None
+        if stats.get("started"):
+            try:
+                started = datetime.fromisoformat(stats["started"])
+                elapsed = (datetime.utcnow() - started).total_seconds()
+            except (ValueError, TypeError):
+                pass
         return templates.TemplateResponse("partials/admin/sync_live.html", {
             "request": request,
             "is_syncing": True,
@@ -77,7 +74,7 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
     return templates.TemplateResponse("partials/admin/sync_live.html", {
         "request": request,
         "is_syncing": False,
-        "stats": dict(sync_service.sync_stats),
+        "stats": shared.get("stats", {}) if shared else {},
         "elapsed": None,
         "last_sync": last_sync,
     })

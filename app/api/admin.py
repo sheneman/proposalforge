@@ -24,22 +24,62 @@ async def admin_dashboard(request: Request):
 
 
 @router.get("/sync/live", response_class=HTMLResponse)
-async def sync_live(request: Request):
-    stats = dict(sync_service.sync_stats)
-    elapsed = None
-    if stats.get("started"):
-        try:
-            started = datetime.fromisoformat(stats["started"])
-            elapsed = (datetime.utcnow() - started).total_seconds()
-        except (ValueError, TypeError):
-            pass
+async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
+    # Check in-memory state first (works in single-worker and for the worker running the sync)
+    if sync_service.is_syncing:
+        stats = dict(sync_service.sync_stats)
+        elapsed = None
+        if stats.get("started"):
+            try:
+                started = datetime.fromisoformat(stats["started"])
+                elapsed = (datetime.utcnow() - started).total_seconds()
+            except (ValueError, TypeError):
+                pass
+        return templates.TemplateResponse("partials/admin/sync_live.html", {
+            "request": request,
+            "is_syncing": True,
+            "stats": stats,
+            "elapsed": elapsed,
+            "last_sync": sync_service.last_sync,
+        })
+
+    # Fallback: check DB for a running sync (handles multi-worker where another worker owns the sync)
+    running_log = (await db.execute(
+        select(SyncLog).where(SyncLog.status == "running").order_by(SyncLog.started_at.desc()).limit(1)
+    )).scalar_one_or_none()
+
+    if running_log:
+        elapsed = (datetime.utcnow() - running_log.started_at).total_seconds() if running_log.started_at else None
+        stats = {
+            "type": running_log.sync_type or "full",
+            "phase": "fetching",
+            "total": running_log.total_items or 0,
+            "success": running_log.success_count or 0,
+            "errors": running_log.error_count or 0,
+            "skipped": 0,
+            "started": running_log.started_at.isoformat() if running_log.started_at else None,
+        }
+        return templates.TemplateResponse("partials/admin/sync_live.html", {
+            "request": request,
+            "is_syncing": True,
+            "stats": stats,
+            "elapsed": elapsed,
+            "last_sync": None,
+        })
+
+    # No sync running — show last completed sync
+    last_log = (await db.execute(
+        select(SyncLog).where(SyncLog.status == "completed").order_by(SyncLog.completed_at.desc()).limit(1)
+    )).scalar_one_or_none()
+
+    last_sync = last_log.completed_at if last_log else sync_service.last_sync
 
     return templates.TemplateResponse("partials/admin/sync_live.html", {
         "request": request,
-        "is_syncing": sync_service.is_syncing,
-        "stats": stats,
-        "elapsed": elapsed,
-        "last_sync": sync_service.last_sync,
+        "is_syncing": False,
+        "stats": dict(sync_service.sync_stats),
+        "elapsed": None,
+        "last_sync": last_sync,
     })
 
 

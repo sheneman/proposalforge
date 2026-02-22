@@ -27,6 +27,7 @@ docker-compose.override.yml
 
 # Database
 *.sql.bak
+backups/
 
 # OS
 .DS_Store

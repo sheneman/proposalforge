@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models import Opportunity, Agency
 from app.models.sync_log import SyncLog
 from app.services.sync_service import sync_service
+from app.services.settings_service import settings_service
 from app.tasks import scheduler
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -170,3 +171,75 @@ async def update_interval(request: Request, hours: int = 6):
     if hours in (1, 3, 6, 12, 24):
         scheduler.update_interval(hours)
     return await scheduler_info(request)
+
+
+# --- LLM Backend Settings ---
+
+@router.get("/llm", response_class=HTMLResponse)
+async def llm_settings(request: Request, db: AsyncSession = Depends(get_db)):
+    llm = await settings_service.get_llm_settings(db)
+    return templates.TemplateResponse("partials/admin/llm_settings.html", {
+        "request": request,
+        "llm": llm,
+        "saved": False,
+    })
+
+
+@router.post("/llm", response_class=HTMLResponse)
+async def save_llm_settings(request: Request, db: AsyncSession = Depends(get_db)):
+    form = await request.form()
+    base_url = (form.get("base_url") or "").strip()
+    model = (form.get("model") or "").strip()
+    api_key = (form.get("api_key") or "").strip()
+
+    # Always save all three fields (empty string clears a setting)
+    await settings_service.save_llm_settings(db, base_url=base_url, model=model, api_key=api_key)
+
+    llm = await settings_service.get_llm_settings(db)
+    return templates.TemplateResponse("partials/admin/llm_settings.html", {
+        "request": request,
+        "llm": llm,
+        "saved": True,
+    })
+
+
+@router.post("/llm/test")
+async def test_llm_connection(request: Request, db: AsyncSession = Depends(get_db)):
+    # Read values from the form so Test works even without saving first
+    body = await request.json()
+    base_url = (body.get("base_url") or "").strip()
+    model = (body.get("model") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+
+    # Fall back to DB/config if the form fields are empty
+    if not base_url or not model:
+        llm = await settings_service.get_llm_settings(db)
+        base_url = base_url or llm["base_url"] or ""
+        model = model or llm["model"] or ""
+        api_key = api_key or llm["api_key"] or ""
+
+    if not base_url or not model:
+        return JSONResponse(content={
+            "success": False,
+            "message": "Endpoint and model must be configured first.",
+        })
+
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=10,
+            timeout=15,
+        )
+        reply = (response.choices[0].message.content or "").strip()[:50]
+        return JSONResponse(content={
+            "success": True,
+            "message": f"Connected. Response: \"{reply}\"",
+        })
+    except Exception as e:
+        return JSONResponse(content={
+            "success": False,
+            "message": str(e)[:200],
+        })

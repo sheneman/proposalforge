@@ -68,9 +68,11 @@ from app.api.search import router as search_router
 from app.api.opportunities import router as opportunities_router
 from app.api.sync import router as sync_router
 from app.api.admin import router as admin_router
+from app.api.analytics import router as analytics_router
 
 app.include_router(pages_router)
 app.include_router(search_router)
 app.include_router(opportunities_router)
 app.include_router(sync_router)
 app.include_router(admin_router)
+app.include_router(analytics_router)

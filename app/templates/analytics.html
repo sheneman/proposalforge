@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics - ProposalForge{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Left Sidebar: Filters -->
+    <div class="col-md-3">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-navy text-white">
+                <i class="bi bi-funnel"></i> Filters
+            </div>
+            <div class="card-body" id="analytics-filters">
+                <!-- Date Range -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Date Range</label>
+                    <input type="date" class="form-control form-control-sm mb-1" id="filter-date-start" placeholder="Start">
+                    <input type="date" class="form-control form-control-sm" id="filter-date-end" placeholder="End">
+                </div>
+
+                <!-- Status -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Status</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="posted" id="status-posted" checked>
+                        <label class="form-check-label small" for="status-posted">Posted</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="forecasted" id="status-forecasted" checked>
+                        <label class="form-check-label small" for="status-forecasted">Forecasted</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="closed" id="status-closed">
+                        <label class="form-check-label small" for="status-closed">Closed</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="archived" id="status-archived">
+                        <label class="form-check-label small" for="status-archived">Archived</label>
+                    </div>
+                </div>
+
+                <!-- Agency -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Agency</label>
+                    <input type="text" class="form-control form-control-sm mb-1" id="agency-search" placeholder="Search agencies...">
+                    <div class="agency-list border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                        {% for a in agencies %}
+                        {% if a.count > 0 %}
+                        <div class="form-check agency-item">
+                            <input class="form-check-input agency-cb" type="checkbox" value="{{ a.code }}" id="agency-{{ a.code }}">
+                            <label class="form-check-label small" for="agency-{{ a.code }}">
+                                {{ a.name[:35] }} <span class="text-muted">({{ a.count }})</span>
+                            </label>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Category -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Funding Category</label>
+                    <div class="border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                        {% for c in categories %}
+                        <div class="form-check">
+                            <input class="form-check-input category-cb" type="checkbox" value="{{ c.code }}" id="cat-{{ c.code }}">
+                            <label class="form-check-label small" for="cat-{{ c.code }}">
+                                {{ c.name[:35] }} <span class="text-muted">({{ c.count }})</span>
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Granularity -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Time Granularity</label>
+                    <select class="form-select form-select-sm" id="filter-granularity">
+                        <option value="month" selected>Month</option>
+                        <option value="quarter">Quarter</option>
+                        <option value="year">Year</option>
+                        <option value="week">Week</option>
+                    </select>
+                </div>
+
+                <!-- Buttons -->
+                <div class="d-grid gap-2">
+                    <button class="btn btn-navy btn-sm" id="btn-apply-filters">
+                        <i class="bi bi-check-circle"></i> Apply Filters
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" id="btn-reset-filters">
+                        <i class="bi bi-arrow-counterclockwise"></i> Reset
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="col-md-9">
+        <!-- KPI Summary Cards -->
+        <div class="row mb-4" id="kpi-cards">
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Total Opportunities</div>
+                        <h4 class="text-navy mb-0" id="kpi-total">--</h4>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Total Funding</div>
+                        <h4 class="text-navy mb-0" id="kpi-funding">--</h4>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Avg Ceiling</div>
+                        <h4 class="text-navy mb-0" id="kpi-avg">--</h4>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Agencies</div>
+                        <h4 class="text-navy mb-0" id="kpi-agencies">--</h4>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Categories</div>
+                        <h4 class="text-navy mb-0" id="kpi-categories">--</h4>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <ul class="nav nav-tabs" id="analyticsTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="timeline-tab" data-bs-toggle="tab" data-bs-target="#timeline-pane" type="button" role="tab">
+                    <i class="bi bi-graph-up"></i> Timeline
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="funding-tab" data-bs-toggle="tab" data-bs-target="#funding-pane" type="button" role="tab">
+                    <i class="bi bi-currency-dollar"></i> Funding
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="agencies-tab" data-bs-toggle="tab" data-bs-target="#agencies-pane" type="button" role="tab">
+                    <i class="bi bi-building"></i> Agencies
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="categories-tab" data-bs-toggle="tab" data-bs-target="#categories-pane" type="button" role="tab">
+                    <i class="bi bi-tags"></i> Categories
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="chat-tab" data-bs-toggle="tab" data-bs-target="#chat-pane" type="button" role="tab">
+                    <i class="bi bi-chat-dots"></i> Ask AI
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content border border-top-0 rounded-bottom bg-white p-3" id="analyticsTabContent">
+            <!-- Timeline Tab -->
+            <div class="tab-pane fade show active" id="timeline-pane" role="tabpanel">
+                <h6 class="text-navy mb-3">Opportunities Over Time</h6>
+                <div class="chart-container mb-4">
+                    <canvas id="chart-timeline"></canvas>
+                </div>
+                <h6 class="text-navy mb-3">Close Dates Over Time</h6>
+                <div class="chart-container">
+                    <canvas id="chart-close-dates"></canvas>
+                </div>
+            </div>
+
+            <!-- Funding Tab -->
+            <div class="tab-pane fade" id="funding-pane" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Award Ceiling Distribution</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-funding-dist"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Funding by Agency (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-funding-agency"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Funding Trends</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-funding-trends"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Avg Floor vs Ceiling by Agency</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-floor-ceiling"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agencies Tab -->
+            <div class="tab-pane fade" id="agencies-pane" role="tabpanel">
+                <h6 class="text-navy mb-3">Agency Comparison by Status</h6>
+                <div class="chart-container chart-container-tall mb-4">
+                    <canvas id="chart-agency-comp"></canvas>
+                </div>
+                <h6 class="text-navy mb-3">Agency Activity Over Time (Top 8)</h6>
+                <div class="chart-container mb-4">
+                    <canvas id="chart-agency-activity"></canvas>
+                </div>
+                <h6 class="text-navy mb-3">Agency x Category (Bubble Chart)</h6>
+                <div class="chart-container chart-container-tall">
+                    <canvas id="chart-agency-category"></canvas>
+                </div>
+            </div>
+
+            <!-- Categories Tab -->
+            <div class="tab-pane fade" id="categories-pane" role="tabpanel">
+                <h6 class="text-navy mb-3">Funding by Category</h6>
+                <div class="chart-container mb-4">
+                    <canvas id="chart-cat-funding"></canvas>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Classification Breakdown</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-classification"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Classification Trends</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-classif-trends"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Tab -->
+            <div class="tab-pane fade" id="chat-pane" role="tabpanel">
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-bubble chat-assistant">
+                            <p class="mb-1">I can help you explore the grant opportunities database. Try asking questions like:</p>
+                            <ul class="mb-0 small">
+                                <li>"How many open opportunities are there?"</li>
+                                <li>"Show me top 10 agencies by total funding"</li>
+                                <li>"List the 5 largest awards closing this month"</li>
+                                <li>"What is the average award ceiling for NSF grants?"</li>
+                                <li>"Which categories have the most team-based opportunities?"</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <form id="chat-form" class="chat-input-form">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="chat-input" placeholder="Ask a question about the data..." autocomplete="off">
+                            <button class="btn btn-navy" type="submit" id="chat-send">
+                                <i class="bi bi-send"></i>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/analytics.js"></script>
+<script src="/static/js/chat.js"></script>
+{% endblock %}

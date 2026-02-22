@@ -73,7 +73,7 @@
 </div>
 
 <!-- Quick actions -->
-<div class="row">
+<div class="row mb-4">
     <div class="col-12 text-center">
         <a href="/search" class="btn btn-navy btn-lg me-2">
             <i class="bi bi-search"></i> Search Opportunities
@@ -84,6 +84,72 @@
         <a href="/search?sort_by=posting_date&sort_order=desc" class="btn btn-outline-success btn-lg">
             <i class="bi bi-plus-circle"></i> Recently Posted
         </a>
+    </div>
+</div>
+
+<!-- Closed & Archived Summary -->
+<div class="row mb-4">
+    <div class="col-12">
+        <hr class="my-4">
+        <h5 class="text-muted mb-3"><i class="bi bi-archive"></i> Historical Opportunities</h5>
+    </div>
+</div>
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
+                <h6 class="mb-0"><span class="badge bg-secondary me-2">Closed</span> {{ "{:,}".format(stats.closed.total) }} Opportunities</h6>
+                <a href="/search?status=closed" class="btn btn-sm btn-outline-secondary">Browse</a>
+            </div>
+            <div class="card-body">
+                <div class="row text-center mb-3">
+                    <div class="col-6">
+                        <div class="fw-bold text-navy">${{ "{:,.0f}".format(stats.closed.total_funding) }}</div>
+                        <small class="text-muted">Total Award Ceilings</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="fw-bold text-navy">${{ "{:,.0f}".format(stats.closed.avg_ceiling) }}</div>
+                        <small class="text-muted">Avg Award Ceiling</small>
+                    </div>
+                </div>
+                {% if stats.closed.top_agencies %}
+                <div class="small">
+                    <strong class="text-muted">Top Agencies:</strong>
+                    {% for ag in stats.closed.top_agencies[:5] %}
+                    <span class="badge bg-light text-dark me-1">{{ ag.name }} ({{ "{:,}".format(ag.count) }})</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
+                <h6 class="mb-0"><span class="badge bg-dark me-2">Archived</span> {{ "{:,}".format(stats.archived.total) }} Opportunities</h6>
+                <a href="/search?status=archived" class="btn btn-sm btn-outline-dark">Browse</a>
+            </div>
+            <div class="card-body">
+                <div class="row text-center mb-3">
+                    <div class="col-6">
+                        <div class="fw-bold text-navy">${{ "{:,.0f}".format(stats.archived.total_funding) }}</div>
+                        <small class="text-muted">Total Award Ceilings</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="fw-bold text-navy">${{ "{:,.0f}".format(stats.archived.avg_ceiling) }}</div>
+                        <small class="text-muted">Avg Award Ceiling</small>
+                    </div>
+                </div>
+                {% if stats.archived.top_agencies %}
+                <div class="small">
+                    <strong class="text-muted">Top Agencies:</strong>
+                    {% for ag in stats.archived.top_agencies[:5] %}
+                    <span class="badge bg-light text-dark me-1">{{ ag.name }} ({{ "{:,}".format(ag.count) }})</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}

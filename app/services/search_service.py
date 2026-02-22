@@ -275,6 +275,53 @@ class SearchService:
         cat_result = await session.execute(cat_stmt)
         top_categories = [{"name": r[0], "count": r[1]} for r in cat_result.all()]
 
+        # Closed/archived summary stats
+        closed_stmt = select(
+            func.count(Opportunity.id).label("total"),
+            func.sum(case((Opportunity.award_ceiling.isnot(None), Opportunity.award_ceiling), else_=0)).label("total_funding"),
+            func.avg(case((Opportunity.award_ceiling.isnot(None), Opportunity.award_ceiling), else_=None)).label("avg_ceiling"),
+        ).where(Opportunity.status == "closed")
+        closed_result = await session.execute(closed_stmt)
+        closed_row = closed_result.one()
+
+        archived_stmt = select(
+            func.count(Opportunity.id).label("total"),
+            func.sum(case((Opportunity.award_ceiling.isnot(None), Opportunity.award_ceiling), else_=0)).label("total_funding"),
+            func.avg(case((Opportunity.award_ceiling.isnot(None), Opportunity.award_ceiling), else_=None)).label("avg_ceiling"),
+        ).where(Opportunity.status == "archived")
+        archived_result = await session.execute(archived_stmt)
+        archived_row = archived_result.one()
+
+        # Top agencies for closed
+        closed_agency_stmt = (
+            select(
+                Agency.name,
+                func.count(Opportunity.id).label("count"),
+            )
+            .join(Agency, Agency.code == Opportunity.agency_code)
+            .where(Opportunity.status == "closed")
+            .group_by(Agency.name)
+            .order_by(func.count(Opportunity.id).desc())
+            .limit(10)
+        )
+        closed_agency_result = await session.execute(closed_agency_stmt)
+        closed_top_agencies = [{"name": r[0], "count": r[1]} for r in closed_agency_result.all()]
+
+        # Top agencies for archived
+        archived_agency_stmt = (
+            select(
+                Agency.name,
+                func.count(Opportunity.id).label("count"),
+            )
+            .join(Agency, Agency.code == Opportunity.agency_code)
+            .where(Opportunity.status == "archived")
+            .group_by(Agency.name)
+            .order_by(func.count(Opportunity.id).desc())
+            .limit(10)
+        )
+        archived_agency_result = await session.execute(archived_agency_stmt)
+        archived_top_agencies = [{"name": r[0], "count": r[1]} for r in archived_agency_result.all()]
+
         stats = {
             "total_open": row[0] or 0,
             "closing_this_week": row[1] or 0,
@@ -282,6 +329,18 @@ class SearchService:
             "new_this_week": row[3] or 0,
             "top_agencies": top_agencies,
             "top_categories": top_categories,
+            "closed": {
+                "total": closed_row[0] or 0,
+                "total_funding": float(closed_row[1] or 0),
+                "avg_ceiling": float(closed_row[2] or 0),
+                "top_agencies": closed_top_agencies,
+            },
+            "archived": {
+                "total": archived_row[0] or 0,
+                "total_funding": float(archived_row[1] or 0),
+                "avg_ceiling": float(archived_row[2] or 0),
+                "top_agencies": archived_top_agencies,
+            },
         }
 
         await cache_service.set("pf:stats", stats, STATS_TTL)

@@ -8,6 +8,7 @@ from app.models.category import (
 )
 from app.models.enums import OpportunityStatus
 from app.models.sync_log import SyncLog
+from app.models.site_setting import SiteSetting
 
 __all__ = [
     "Agency",
@@ -18,4 +19,5 @@ __all__ = [
     "OpportunityALN",
     "OpportunityStatus",
     "SyncLog",
+    "SiteSetting",
 ]

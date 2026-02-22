@@ -264,4 +264,10 @@ async def api_chat(
         )
 
     result = await chat_service.chat(db, message, history)
+
+    # Include model name so the UI can display it
+    from app.services.settings_service import settings_service
+    llm = await settings_service.get_llm_settings(db)
+    result["model"] = llm.get("model", "")
+
     return result

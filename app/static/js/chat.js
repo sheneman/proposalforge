@@ -4,6 +4,8 @@
 
     const chatHistory = [];
     let chatChartCounter = 0;
+    let currentAbortController = null;
+    let lastModelName = '';
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -36,19 +38,44 @@
         scrollToBottom();
     }
 
-    function showTyping() {
+    function showTyping(modelName) {
         const container = document.getElementById('chat-messages');
         const indicator = document.createElement('div');
         indicator.className = 'chat-bubble chat-assistant chat-typing';
         indicator.id = 'typing-indicator';
-        indicator.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+        indicator.innerHTML =
+            '<div class="d-flex align-items-center">' +
+                '<div class="me-2">' +
+                    '<div class="fw-bold" style="font-size: 0.85rem;">MindRouter</div>' +
+                    (modelName ? '<div class="text-muted" style="font-size: 0.7rem;">' + escapeHtml(modelName) + '</div>' : '') +
+                '</div>' +
+                '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>' +
+            '</div>';
         container.appendChild(indicator);
         scrollToBottom();
+
+        // Switch send button to stop button
+        var sendBtn = document.getElementById('chat-send');
+        if (sendBtn) {
+            sendBtn.innerHTML = '<i class="bi bi-stop-circle"></i>';
+            sendBtn.classList.remove('btn-navy');
+            sendBtn.classList.add('btn-danger');
+            sendBtn.type = 'button';
+        }
     }
 
     function hideTyping() {
         const el = document.getElementById('typing-indicator');
         if (el) el.remove();
+
+        // Restore send button
+        var sendBtn = document.getElementById('chat-send');
+        if (sendBtn) {
+            sendBtn.innerHTML = '<i class="bi bi-send"></i>';
+            sendBtn.classList.remove('btn-danger');
+            sendBtn.classList.add('btn-navy');
+            sendBtn.type = 'submit';
+        }
     }
 
     function createSqlToggle(sql) {
@@ -235,12 +262,23 @@
         }
     }
 
+    function cancelRequest() {
+        if (currentAbortController) {
+            currentAbortController.abort();
+            currentAbortController = null;
+        }
+        hideTyping();
+        appendTextMessage('Request cancelled.', null);
+    }
+
     async function sendMessage(message) {
         appendUserMessage(message);
-        showTyping();
+        showTyping(lastModelName);
 
         // Add to history
         chatHistory.push({ role: 'user', content: message });
+
+        currentAbortController = new AbortController();
 
         try {
             const resp = await fetch('/analytics/api/chat', {
@@ -250,7 +288,10 @@
                     message: message,
                     history: chatHistory.slice(-6),
                 }),
+                signal: currentAbortController.signal,
             });
+
+            currentAbortController = null;
 
             if (!resp.ok) {
                 hideTyping();
@@ -259,13 +300,16 @@
             }
 
             const data = await resp.json();
+            if (data.model) lastModelName = data.model;
             renderResponse(data);
 
             // Add assistant response to history
             chatHistory.push({ role: 'assistant', content: data.content || JSON.stringify(data) });
 
         } catch (e) {
+            currentAbortController = null;
             hideTyping();
+            if (e.name === 'AbortError') return; // Already handled in cancelRequest
             appendTextMessage('Failed to connect to the server. Please try again.', null);
             console.error('Chat error:', e);
         }
@@ -286,6 +330,7 @@
         const form = document.getElementById('chat-form');
         const input = document.getElementById('chat-input');
         const clearBtn = document.getElementById('chat-clear');
+        const sendBtn = document.getElementById('chat-send');
 
         if (form) {
             form.addEventListener('submit', function(e) {
@@ -294,6 +339,16 @@
                 if (!message) return;
                 input.value = '';
                 sendMessage(message);
+            });
+        }
+
+        // Send button doubles as stop button when waiting
+        if (sendBtn) {
+            sendBtn.addEventListener('click', function(e) {
+                if (currentAbortController) {
+                    e.preventDefault();
+                    cancelRequest();
+                }
             });
         }
 

@@ -23,7 +23,7 @@ class Opportunity(Base):
     category_explanation: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     agency_code: Mapped[str | None] = mapped_column(
-        String(20), ForeignKey("agencies.code"), nullable=True
+        String(50), ForeignKey("agencies.code"), nullable=True
     )
 
     posting_date: Mapped[date | None] = mapped_column(Date, nullable=True)

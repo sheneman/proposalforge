@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -11,6 +11,8 @@ FETCH_URL = "https://api.grants.gov/v1/api/fetchOpportunity"
 
 MAX_RETRIES = 3
 RETRY_BACKOFF = [2, 5, 15]  # seconds
+
+PAGE_SIZE = 25  # Grants.gov API caps at 25 per request
 
 
 class GrantsGovClient:
@@ -67,18 +69,14 @@ class GrantsGovClient:
         self,
         keyword: str = "",
         opp_status: str = "posted",
-        page_number: int = 1,
-        rows_per_page: int = 25,
+        start_record: int = 0,
+        rows: int = PAGE_SIZE,
     ) -> dict[str, Any]:
         payload = {
             "keyword": keyword,
             "oppStatuses": opp_status,
-            "paginationModel": {
-                "sortBy": "openDate",
-                "sortOrder": "desc",
-                "pageNumber": page_number,
-                "rowsPerPage": rows_per_page,
-            },
+            "rows": rows,
+            "startRecordNum": start_record,
         }
         return await self._request_with_retry(SEARCH_URL, payload)
 
@@ -92,25 +90,40 @@ class GrantsGovClient:
     async def fetch_all_opportunities(
         self,
         opp_statuses: list[str] | None = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
-        """Paginate through all search results for each status."""
+        """Paginate through all search results for each status.
+
+        Args:
+            opp_statuses: List of statuses to fetch.
+            progress_callback: Called with (status, items_so_far, estimated_total) after each page.
+            cancel_check: Called before each page; return True to abort.
+        """
         if opp_statuses is None:
             opp_statuses = ["posted", "forecasted", "closed", "archived"]
 
         all_items = []
+        estimated_total = 0
 
         for status in opp_statuses:
-            page = 1
+            if cancel_check and cancel_check():
+                return all_items
+
+            offset = 0
             while True:
-                logger.info(f"Fetching {status} opportunities, page {page}...")
+                if cancel_check and cancel_check():
+                    return all_items
+
+                logger.info(f"Fetching {status} opportunities, offset {offset}...")
                 try:
                     result = await self.search(
                         opp_status=status,
-                        page_number=page,
-                        rows_per_page=100,
+                        start_record=offset,
+                        rows=PAGE_SIZE,
                     )
                 except RuntimeError as e:
-                    logger.error(f"Failed to fetch page {page} for {status}: {e}")
+                    logger.error(f"Failed to fetch {status} at offset {offset}: {e}")
                     break
 
                 items = result.get("oppHits", [])
@@ -119,11 +132,16 @@ class GrantsGovClient:
 
                 all_items.extend(items)
                 total_hits = result.get("hitCount", 0)
-                logger.info(f"Page {page}: got {len(items)} items, total {status}={total_hits}")
+                if offset == 0:
+                    estimated_total += total_hits
 
-                if page * 100 >= total_hits:
+                logger.info(f"Offset {offset}: got {len(items)} items, total {status}={total_hits}, cumulative={len(all_items)}")
+
+                if progress_callback:
+                    progress_callback(status, len(all_items), estimated_total)
+
+                offset += len(items)
+                if offset >= total_hits:
                     break
-
-                page += 1
 
         return all_items

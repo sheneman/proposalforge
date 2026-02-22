@@ -9,13 +9,55 @@
     </span>
 </div>
 
-<!-- Progress bar -->
+{% set phase = stats.get("phase", "fetching") %}
+
+{% if phase == "listing" %}
+<!-- Listing phase: discovering opportunities -->
+{% set listing_fetched = stats.get("listing_fetched", 0) %}
+{% set listing_estimated = stats.get("listing_estimated", 0) %}
+{% set listing_status = stats.get("listing_status", "") %}
+{% set listing_pct = ((listing_fetched / listing_estimated * 100) | round(1)) if listing_estimated > 0 else 0 %}
+
+<div class="mb-2">
+    <small class="text-muted fw-bold">Phase 1/2: Discovering opportunities from Grants.gov...</small>
+</div>
+<div class="progress mb-3" style="height: 24px;">
+    <div class="progress-bar bg-info progress-bar-striped progress-bar-animated"
+         role="progressbar"
+         style="width: {{ listing_pct }}%">
+        {{ listing_pct }}%
+    </div>
+</div>
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold">{{ "{:,}".format(listing_fetched) }} / {{ "{:,}".format(listing_estimated) }}</div>
+        <small class="text-muted">IDs Discovered</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold">{{ listing_status | title }}</div>
+        <small class="text-muted">Current Status</small>
+    </div>
+    <div class="col">
+        {% if elapsed %}
+        <div class="fw-bold">{{ elapsed | int }}s</div>
+        {% else %}
+        <div class="fw-bold">-</div>
+        {% endif %}
+        <small class="text-muted">Elapsed</small>
+    </div>
+</div>
+
+{% else %}
+<!-- Fetching phase: downloading details -->
 {% set total = stats.get("total", 0) %}
 {% set success = stats.get("success", 0) %}
 {% set errors = stats.get("errors", 0) %}
 {% set processed = success + errors %}
 {% set pct = ((processed / total * 100) | round(1)) if total > 0 else 0 %}
 
+<div class="mb-2">
+    <small class="text-muted fw-bold">Phase 2/2: Fetching opportunity details...</small>
+</div>
 <div class="progress mb-3" style="height: 24px;">
     <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
          role="progressbar"
@@ -29,7 +71,7 @@
 
 <div class="row text-center mb-3">
     <div class="col">
-        <div class="fw-bold">{{ processed }} / {{ total }}</div>
+        <div class="fw-bold">{{ "{:,}".format(processed) }} / {{ "{:,}".format(total) }}</div>
         <small class="text-muted">Items Processed</small>
     </div>
     <div class="col">
@@ -37,11 +79,11 @@
         <small class="text-muted">Batch</small>
     </div>
     <div class="col">
-        <div class="fw-bold text-success">{{ success }}</div>
+        <div class="fw-bold text-success">{{ "{:,}".format(success) }}</div>
         <small class="text-muted">Success</small>
     </div>
     <div class="col">
-        <div class="fw-bold text-danger">{{ errors }}</div>
+        <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
         <small class="text-muted">Errors</small>
     </div>
     <div class="col">
@@ -53,6 +95,7 @@
         <small class="text-muted">Elapsed</small>
     </div>
 </div>
+{% endif %}
 
 {% if stats.get("last_error") %}
 <div class="alert alert-warning py-2 small mb-3">
@@ -87,15 +130,15 @@
 {% if stats.get("completed") %}
 <div class="row text-center mb-3">
     <div class="col">
-        <div class="fw-bold">{{ stats.get("total", 0) }}</div>
+        <div class="fw-bold">{{ "{:,}".format(stats.get("total", 0)) }}</div>
         <small class="text-muted">Total Items</small>
     </div>
     <div class="col">
-        <div class="fw-bold text-success">{{ stats.get("success", 0) }}</div>
+        <div class="fw-bold text-success">{{ "{:,}".format(stats.get("success", 0)) }}</div>
         <small class="text-muted">Success</small>
     </div>
     <div class="col">
-        <div class="fw-bold text-danger">{{ stats.get("errors", 0) }}</div>
+        <div class="fw-bold text-danger">{{ "{:,}".format(stats.get("errors", 0)) }}</div>
         <small class="text-muted">Errors</small>
     </div>
 </div>

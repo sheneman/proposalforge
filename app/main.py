@@ -32,6 +32,9 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
 
+    # Clean up any orphaned "running" sync logs from prior crashes/restarts
+    await sync_service._mark_stale_syncs()
+
     # Start scheduler
     setup_scheduler()
 

@@ -93,8 +93,25 @@ class SyncService:
             pass
         return None
 
+    async def _mark_stale_syncs(self):
+        """Mark any orphaned 'running' sync_logs as failed (e.g. from restarts)."""
+        async with async_session() as session:
+            async with session.begin():
+                stmt = select(SyncLog).where(SyncLog.status == "running")
+                result = await session.execute(stmt)
+                stale = result.scalars().all()
+                now = datetime.utcnow()
+                for log in stale:
+                    log.status = "failed"
+                    log.completed_at = now
+                    log.duration_seconds = (now - log.started_at).total_seconds()
+                    log.error_message = "Interrupted (server restart or orphaned)"
+                if stale:
+                    logger.info(f"Marked {len(stale)} orphaned sync logs as failed")
+
     async def _create_sync_log(self, sync_type: str) -> int:
         """Create a sync_log row and return its id."""
+        await self._mark_stale_syncs()
         async with async_session() as session:
             async with session.begin():
                 log = SyncLog(
@@ -309,7 +326,26 @@ class SyncService:
 
         try:
             logger.info("Starting full sync from Grants.gov...")
-            items = await self.client.fetch_all_opportunities()
+            self.sync_stats["phase"] = "listing"
+
+            def _on_listing_progress(status: str, fetched: int, estimated: int):
+                self.sync_stats["phase"] = "listing"
+                self.sync_stats["listing_status"] = status
+                self.sync_stats["listing_fetched"] = fetched
+                self.sync_stats["listing_estimated"] = estimated
+
+            items = await self.client.fetch_all_opportunities(
+                progress_callback=_on_listing_progress,
+                cancel_check=lambda: self._cancel_requested,
+            )
+
+            if self._cancel_requested:
+                logger.info("Sync cancelled during listing phase")
+                self.sync_stats["cancelled"] = True
+                await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
+                return
+
+            self.sync_stats["phase"] = "fetching"
             self.sync_stats["total"] = len(items)
             logger.info(f"Found {len(items)} opportunities to sync")
 
@@ -415,17 +451,18 @@ class SyncService:
 
         try:
             logger.info("Starting incremental sync...")
-            # Fetch first few pages of recently posted/forecasted
-            for page in range(1, 11):  # First 10 pages = 250 opportunities
+            # Fetch first 10 pages of recently posted/forecasted
+            for batch_num in range(10):
                 if self._cancel_requested:
                     logger.info("Sync cancelled by user")
                     self.sync_stats["cancelled"] = True
                     await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
                     return
 
-                self.sync_stats["current_batch"] = page
+                self.sync_stats["current_batch"] = batch_num + 1
+                offset = batch_num * 25
 
-                result = await self.client.search(page_number=page, rows_per_page=25)
+                result = await self.client.search(start_record=offset, rows=25)
                 items = result.get("oppHits", [])
                 if not items:
                     break

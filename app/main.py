@@ -35,12 +35,19 @@ async def lifespan(app: FastAPI):
     # Clean up any orphaned "running" sync logs from prior crashes/restarts
     await sync_service._mark_stale_syncs()
 
-    # Start scheduler
-    setup_scheduler()
+    # Start scheduler and optional initial sync only in one worker.
+    # Uvicorn workers each run lifespan; use a Redis lock to ensure only one proceeds.
+    _is_primary = False
+    try:
+        _is_primary = await cache_service.acquire_primary_lock()
+    except Exception:
+        logger.warning("Could not acquire primary lock, assuming single worker")
+        _is_primary = True
 
-    # Optional initial sync
-    if settings.SYNC_ON_STARTUP:
-        asyncio.create_task(sync_service.full_sync())
+    if _is_primary:
+        setup_scheduler()
+        if settings.SYNC_ON_STARTUP:
+            asyncio.create_task(sync_service.full_sync())
 
     yield
 

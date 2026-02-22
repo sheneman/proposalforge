@@ -58,5 +58,11 @@ class CacheService:
     async def invalidate_all(self):
         await self.delete_pattern("pf:*")
 
+    async def acquire_primary_lock(self, ttl: int = 300) -> bool:
+        """Try to acquire a lock so only one uvicorn worker runs startup tasks."""
+        if not self._redis:
+            return True
+        return bool(await self._redis.set("pf:primary_worker", "1", nx=True, ex=ttl))
+
 
 cache_service = CacheService()

@@ -52,7 +52,8 @@
 {% set total = stats.get("total", 0) %}
 {% set success = stats.get("success", 0) %}
 {% set errors = stats.get("errors", 0) %}
-{% set processed = success + errors %}
+{% set skipped = stats.get("skipped", 0) %}
+{% set processed = success + errors + skipped %}
 {% set pct = ((processed / total * 100) | round(1)) if total > 0 else 0 %}
 
 <div class="mb-2">
@@ -85,6 +86,10 @@
     <div class="col">
         <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
         <small class="text-muted">Errors</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-muted">{{ "{:,}".format(skipped) }}</div>
+        <small class="text-muted">Skipped</small>
     </div>
     <div class="col">
         {% if elapsed %}
@@ -141,6 +146,12 @@
         <div class="fw-bold text-danger">{{ "{:,}".format(stats.get("errors", 0)) }}</div>
         <small class="text-muted">Errors</small>
     </div>
+    {% if stats.get("skipped", 0) > 0 %}
+    <div class="col">
+        <div class="fw-bold text-muted">{{ "{:,}".format(stats.get("skipped", 0)) }}</div>
+        <small class="text-muted">Skipped</small>
+    </div>
+    {% endif %}
 </div>
 {% endif %}
 

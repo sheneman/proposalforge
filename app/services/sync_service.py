@@ -363,6 +363,7 @@ class SyncService:
             "current_batch": 0,
             "total_batches": 0,
             "last_error": None,
+            "skipped": 0,
             "errors_list": [],
         }
 
@@ -430,6 +431,11 @@ class SyncService:
         """Fetch opportunity detail from API (concurrent-safe, no DB writes)."""
         try:
             detail = await self.client.fetch_opportunity(opp_id)
+            # Grants.gov returns 200 with errorMessages for purged/stale records
+            if detail.get("errorMessages") or "id" not in detail:
+                self.sync_stats["skipped"] = self.sync_stats.get("skipped", 0) + 1
+                logger.debug(f"Skipped opp {opp_id}: record not found on Grants.gov")
+                return None
             if close_date_str:
                 detail["_search_close_date"] = close_date_str
             detail["_opp_id"] = opp_id
@@ -479,6 +485,7 @@ class SyncService:
             "total": 0,
             "success": 0,
             "errors": 0,
+            "skipped": 0,
             "current_batch": 0,
             "total_batches": 10,
             "last_error": None,

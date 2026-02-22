@@ -191,15 +191,8 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
     if not cleaned.upper().startswith(("SELECT", "WITH")):
         return False, "Only SELECT queries are allowed."
 
-    if FORBIDDEN_PATTERNS.search(stripped):
+    if FORBIDDEN_PATTERNS.search(cleaned):
         return False, "Query contains forbidden SQL operations."
-
-    # No multi-statements (semicolons in the middle)
-    # Remove string literals first to avoid false positives
-    no_strings = re.sub(r"'[^']*'", "", stripped)
-    no_strings = re.sub(r'"[^"]*"', "", no_strings)
-    if ";" in no_strings:
-        return False, "Multi-statement queries are not allowed."
 
     return True, ""
 

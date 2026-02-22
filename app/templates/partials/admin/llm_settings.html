@@ -5,22 +5,22 @@
 </div>
 {% endif %}
 
-<form hx-post="/admin/llm"
-      hx-target="#llm-settings"
-      hx-swap="innerHTML">
+<form {% if is_admin %}hx-post="/admin/llm" hx-target="#llm-settings" hx-swap="innerHTML"{% endif %}>
     <div class="row">
         <div class="col-md-4 mb-3">
             <label class="form-label fw-bold" for="llm-base-url">API Endpoint</label>
             <input type="url" class="form-control" id="llm-base-url" name="base_url"
                    value="{{ llm.base_url or '' }}"
-                   placeholder="https://api.example.com/v1">
+                   placeholder="https://api.example.com/v1"
+                   {{ 'readonly' if not is_admin }}>
             <div class="form-text">Base URL for the OpenAI-compatible API.</div>
         </div>
         <div class="col-md-4 mb-3">
             <label class="form-label fw-bold" for="llm-model">Model</label>
             <input type="text" class="form-control" id="llm-model" name="model"
                    value="{{ llm.model or '' }}"
-                   placeholder="openai/gpt-oss-120b">
+                   placeholder="openai/gpt-oss-120b"
+                   {{ 'readonly' if not is_admin }}>
             <div class="form-text">Model identifier to use for chat queries.</div>
         </div>
         <div class="col-md-4 mb-3">
@@ -28,7 +28,8 @@
             <div class="input-group">
                 <input type="password" class="form-control" id="llm-api-key" name="api_key"
                        value="{{ llm.api_key or '' }}"
-                       placeholder="sk-...">
+                       placeholder="sk-..."
+                       {{ 'readonly' if not is_admin }}>
                 <button class="btn btn-outline-secondary" type="button"
                         onclick="toggleApiKey(this)">
                     <i class="bi bi-eye"></i>
@@ -37,6 +38,7 @@
             <div class="form-text">API key for authentication. Stored in the database.</div>
         </div>
     </div>
+    {% if is_admin %}
     <div class="d-flex align-items-center gap-2">
         <button type="submit" class="btn btn-navy btn-sm">
             <i class="bi bi-save"></i> Save Settings
@@ -47,4 +49,7 @@
         </button>
         <span id="llm-test-result" class="small"></span>
     </div>
+    {% else %}
+    <div class="text-muted small"><i class="bi bi-lock"></i> Log in to modify LLM settings</div>
+    {% endif %}
 </form>

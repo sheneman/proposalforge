@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     SYNC_ON_STARTUP: bool = False
     SYNC_INTERVAL_HOURS: int = 6
 
+    # Admin authentication (must be set in .env — no defaults for security)
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = ""
+
     # LLM settings for Chat with My Data
     LLM_BASE_URL: str = "https://mindrouter.uidaho.edu/v1"
     LLM_MODEL: str = "openai/gpt-oss-120b"

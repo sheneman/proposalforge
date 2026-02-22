@@ -45,10 +45,21 @@
                         <a class="nav-link" href="/admin"><i class="bi bi-gear"></i> Admin</a>
                     </li>
                 </ul>
-                <form class="d-flex" action="/search" method="get">
+                <form class="d-flex me-2" action="/search" method="get">
                     <input class="form-control me-2" type="search" name="q" placeholder="Search opportunities..." aria-label="Search">
                     <button class="btn btn-gold" type="submit">Search</button>
                 </form>
+                {% if request.session.get("is_admin") %}
+                <form action="/admin/logout" method="post" class="d-inline">
+                    <button type="submit" class="btn btn-outline-light btn-sm">
+                        <i class="bi bi-box-arrow-right"></i> Logout
+                    </button>
+                </form>
+                {% else %}
+                <a href="/admin/login" class="btn btn-outline-light btn-sm">
+                    <i class="bi bi-box-arrow-in-right"></i> Login
+                </a>
+                {% endif %}
             </div>
         </div>
     </nav>

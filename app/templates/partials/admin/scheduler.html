@@ -20,6 +20,7 @@
             {% endif %}
         </div>
     </div>
+    {% if is_admin %}
     <div class="col-md-4">
         <label class="form-label fw-bold">Toggle Scheduler</label>
         <div>
@@ -48,4 +49,9 @@
             {% endfor %}
         </div>
     </div>
+    {% else %}
+    <div class="col-md-8">
+        <div class="text-muted small mt-2"><i class="bi bi-lock"></i> Log in to manage the scheduler</div>
+    </div>
+    {% endif %}
 </div>

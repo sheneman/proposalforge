@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
 from app.database import engine, Base
@@ -65,6 +66,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Session middleware for admin auth
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

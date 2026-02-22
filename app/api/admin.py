@@ -1,12 +1,13 @@
 import asyncio
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models import Opportunity, Agency
 from app.models.sync_log import SyncLog
@@ -18,9 +19,54 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")
 
 
+def _is_admin(request: Request) -> bool:
+    return request.session.get("is_admin", False)
+
+
+def require_admin(request: Request):
+    if not _is_admin(request):
+        raise HTTPException(status_code=403, detail="Admin authentication required")
+
+
 @router.get("", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
-    return templates.TemplateResponse("admin.html", {"request": request})
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        "is_admin": _is_admin(request),
+    })
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if _is_admin(request):
+        return RedirectResponse("/admin", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+
+@router.post("/login", response_class=HTMLResponse)
+async def login(request: Request):
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    password = (form.get("password") or "").strip()
+
+    if (
+        settings.ADMIN_PASSWORD
+        and username == settings.ADMIN_USERNAME
+        and password == settings.ADMIN_PASSWORD
+    ):
+        request.session["is_admin"] = True
+        return RedirectResponse("/admin", status_code=302)
+
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "error": "Invalid username or password",
+    })
+
+
+@router.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/admin", status_code=302)
 
 
 @router.get("/sync/live", response_class=HTMLResponse)
@@ -43,6 +89,7 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
             "stats": stats,
             "elapsed": elapsed,
             "last_sync": sync_service.last_sync,
+            "is_admin": _is_admin(request),
         })
 
     # This worker doesn't own the sync — check Redis for shared stats from the worker that does
@@ -62,6 +109,7 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
             "stats": stats,
             "elapsed": elapsed,
             "last_sync": None,
+            "is_admin": _is_admin(request),
         })
 
     # No sync running — show last completed sync
@@ -77,10 +125,11 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
         "stats": shared.get("stats", {}) if shared else {},
         "elapsed": None,
         "last_sync": last_sync,
+        "is_admin": _is_admin(request),
     })
 
 
-@router.post("/sync/trigger", response_class=HTMLResponse)
+@router.post("/sync/trigger", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def trigger_sync(request: Request, full: bool = False, refresh: bool = False):
     if not sync_service.is_syncing:
         if refresh:
@@ -96,7 +145,7 @@ async def trigger_sync(request: Request, full: bool = False, refresh: bool = Fal
     return await sync_live(request)
 
 
-@router.post("/sync/cancel", response_class=HTMLResponse)
+@router.post("/sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def cancel_sync(request: Request):
     sync_service.cancel_sync()
     await asyncio.sleep(0.5)
@@ -194,16 +243,17 @@ async def scheduler_info(request: Request):
         "enabled": scheduler.is_enabled(),
         "interval_hours": scheduler.get_interval_hours(),
         "next_run": next_run,
+        "is_admin": _is_admin(request),
     })
 
 
-@router.post("/scheduler/toggle", response_class=HTMLResponse)
+@router.post("/scheduler/toggle", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def toggle_scheduler(request: Request):
     scheduler.toggle_scheduler()
     return await scheduler_info(request)
 
 
-@router.post("/scheduler/interval", response_class=HTMLResponse)
+@router.post("/scheduler/interval", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def update_interval(request: Request, hours: int = 6):
     if hours in (1, 3, 6, 12, 24):
         scheduler.update_interval(hours)
@@ -219,10 +269,11 @@ async def llm_settings(request: Request, db: AsyncSession = Depends(get_db)):
         "request": request,
         "llm": llm,
         "saved": False,
+        "is_admin": _is_admin(request),
     })
 
 
-@router.post("/llm", response_class=HTMLResponse)
+@router.post("/llm", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def save_llm_settings(request: Request, db: AsyncSession = Depends(get_db)):
     form = await request.form()
     base_url = (form.get("base_url") or "").strip()
@@ -237,10 +288,11 @@ async def save_llm_settings(request: Request, db: AsyncSession = Depends(get_db)
         "request": request,
         "llm": llm,
         "saved": True,
+        "is_admin": _is_admin(request),
     })
 
 
-@router.post("/llm/test")
+@router.post("/llm/test", dependencies=[Depends(require_admin)])
 async def test_llm_connection(request: Request, db: AsyncSession = Depends(get_db)):
     # Read values from the form so Test works even without saving first
     body = await request.json()

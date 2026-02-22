@@ -108,6 +108,7 @@
 </div>
 {% endif %}
 
+{% if is_admin %}
 <div class="text-end">
     <button class="btn btn-danger btn-sm"
             hx-post="/admin/sync/cancel"
@@ -116,6 +117,7 @@
         <i class="bi bi-stop-circle"></i> Cancel Sync
     </button>
 </div>
+{% endif %}
 
 {% else %}
 
@@ -155,6 +157,7 @@
 </div>
 {% endif %}
 
+{% if is_admin %}
 <div class="d-flex gap-2">
     <button class="btn btn-primary btn-sm"
             hx-post="/admin/sync/trigger?full=true"
@@ -177,5 +180,8 @@
         <i class="bi bi-database-gear"></i> Refresh Existing
     </button>
 </div>
+{% else %}
+<div class="text-muted small"><i class="bi bi-lock"></i> Log in to manage syncs</div>
+{% endif %}
 
 {% endif %}

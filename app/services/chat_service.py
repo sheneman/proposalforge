@@ -18,7 +18,7 @@ _RULES = """
 1. ALWAYS generate an executable SQL query for every question. Do NOT just describe or suggest a query — actually write it out. Every response MUST contain a ```sql ... ``` code block with a runnable query. The query will be executed automatically.
 2. ONLY generate SELECT statements. Never INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, or REVOKE.
 3. Always include LIMIT (max 200 rows) to prevent huge result sets.
-4. Use MariaDB/MySQL syntax (DATE_FORMAT, IFNULL, etc.).
+4. Use MariaDB/MySQL syntax (DATE_FORMAT, IFNULL, etc.). NEVER use WITH ROLLUP together with ORDER BY — MariaDB forbids this combination. Do NOT use window functions like ROW_NUMBER() or CTEs unless necessary; prefer simple GROUP BY queries.
 5. When joining opportunities to categories, use opportunity_funding_categories.
 6. For agency names, JOIN with the agencies table on o.agency_code = a.code.
 7. For funding instruments, JOIN with opportunity_funding_instruments on ofi.opportunity_id = o.id.
@@ -470,7 +470,7 @@ class ChatService:
 
             return {
                 "type": "text",
-                "content": f"The query failed to execute: {str(e)}",
+                "content": "The query had a syntax error and I couldn't fix it automatically. Try rephrasing your question.",
                 "sql": sql,
             }
 

@@ -470,6 +470,7 @@
         loadTimelineTab();
 
         // Tab switching
+        var filtersCard = document.querySelector('#analytics-filters')?.closest('.card');
         document.querySelectorAll('#analyticsTabs button[data-bs-toggle="tab"]').forEach(btn => {
             btn.addEventListener('shown.bs.tab', function(e) {
                 const target = e.target.getAttribute('data-bs-target');
@@ -479,6 +480,13 @@
                 else if (target === '#categories-pane') activeTab = 'categories';
                 else if (target === '#chat-pane') activeTab = 'chat';
                 loadActiveTab();
+
+                // Grey out filters when on Ask AI tab
+                if (filtersCard) {
+                    var isChatTab = (activeTab === 'chat');
+                    filtersCard.style.opacity = isChatTab ? '0.4' : '1';
+                    filtersCard.style.pointerEvents = isChatTab ? 'none' : '';
+                }
             });
         });
 

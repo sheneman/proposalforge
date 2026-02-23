@@ -118,8 +118,8 @@ class ResearcherSyncService:
             researcher = result.scalar_one_or_none()
 
             # Extract name
-            first_name = data.get("first_name") or data.get("firstName") or ""
-            last_name = data.get("last_name") or data.get("lastName") or ""
+            first_name = data.get("first_name") or data.get("researcher_researcher_first_name") or ""
+            last_name = data.get("last_name") or data.get("researcher_researcher_last_name") or ""
             full_name = data.get("full_name") or data.get("name") or f"{first_name} {last_name}".strip()
 
             # Extract contacts
@@ -127,21 +127,46 @@ class ResearcherSyncService:
             email = _extract_contact(contacts, "email") or data.get("email")
             phone = _extract_contact(contacts, "phone") or data.get("phone")
 
-            # Photo and profile
-            photo_url = data.get("photo_url") or data.get("photoUrl")
-            profile_url = data.get("profile_url") or data.get("profileUrl")
+            # Photo and profile — CollabNet uses researcher_photo_url / researcher_profile_identifier_url
+            photo_url = (
+                data.get("researcher_photo_url")
+                or data.get("photo_url")
+                or data.get("photoUrl")
+            )
+            profile_url = (
+                data.get("researcher_profile_identifier_url")
+                or data.get("profile_url")
+                or data.get("profileUrl")
+            )
 
-            # Position
-            position_title = data.get("position_title") or data.get("positionTitle") or data.get("title")
-            position_code = data.get("position_code") or data.get("positionCode")
+            # Position — CollabNet uses researcher_position_desc / researcher_position_value
+            position_title = (
+                data.get("researcher_position_desc")
+                or data.get("position_title")
+                or data.get("job_description")
+            )
+            position_code = (
+                data.get("researcher_position_value")
+                or data.get("position_code")
+            )
 
-            # Status
-            status = (data.get("status") or "ACTIVE").upper()
+            # Status — CollabNet uses status_value
+            raw_status = data.get("status_value") or data.get("status") or "ACTIVE"
+            status = raw_status.upper()
 
-            # Keywords
-            keywords_list = data.get("keywords") or data.get("research_keywords") or []
-            if isinstance(keywords_list, str):
-                keywords_list = [k.strip() for k in keywords_list.split(",") if k.strip()]
+            # Keywords — CollabNet uses researcher_researcher_keyword: [{value: "..."}]
+            keywords_list = []
+            raw_keywords = data.get("researcher_researcher_keyword") or data.get("keywords") or data.get("research_keywords") or []
+            if isinstance(raw_keywords, str):
+                keywords_list = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+            elif isinstance(raw_keywords, list):
+                for kw in raw_keywords:
+                    if isinstance(kw, dict):
+                        val = kw.get("value") or kw.get("keyword") or ""
+                        if val:
+                            keywords_list.append(val.strip())
+                    elif isinstance(kw, str) and kw.strip():
+                        keywords_list.append(kw.strip())
             keyword_text = ", ".join(keywords_list) if keywords_list else None
 
             values = dict(
@@ -180,18 +205,25 @@ class ResearcherSyncService:
                     session.add(ResearcherKeyword(researcher_id=researcher.id, keyword=kw.strip()[:255]))
 
             # Delete and recreate affiliations
+            # CollabNet uses researcher_researcher_organization_affiliation (current)
+            # and researcher_researcher_previous_organization_affiliation (previous)
             await session.execute(
                 text("DELETE FROM researcher_affiliations WHERE researcher_id = :rid"),
                 {"rid": researcher.id},
             )
-            affiliations = data.get("affiliations") or data.get("organizations") or []
-            for aff in affiliations:
+            current_affiliations = (
+                data.get("researcher_researcher_organization_affiliation")
+                or data.get("affiliations")
+                or data.get("organizations")
+                or []
+            )
+            for aff in current_affiliations:
                 if isinstance(aff, dict):
                     session.add(ResearcherAffiliation(
                         researcher_id=researcher.id,
-                        organization_name=aff.get("name") or aff.get("organization_name") or aff.get("organizationName"),
-                        organization_code=aff.get("code") or aff.get("organization_code") or aff.get("organizationCode"),
-                        is_current=aff.get("is_current", True),
+                        organization_name=aff.get("organization_name") or aff.get("name"),
+                        organization_code=aff.get("organization_code") or aff.get("code"),
+                        is_current=True,
                     ))
                 elif isinstance(aff, str):
                     session.add(ResearcherAffiliation(
@@ -200,17 +232,32 @@ class ResearcherSyncService:
                         is_current=True,
                     ))
 
+            previous_affiliations = data.get("researcher_researcher_previous_organization_affiliation") or []
+            for aff in previous_affiliations:
+                if isinstance(aff, dict):
+                    session.add(ResearcherAffiliation(
+                        researcher_id=researcher.id,
+                        organization_name=aff.get("organization_name") or aff.get("name"),
+                        organization_code=aff.get("organization_code") or aff.get("code"),
+                        is_current=False,
+                    ))
+
             # Delete and recreate education
+            # CollabNet uses researcher_researcher_education
             await session.execute(
                 text("DELETE FROM researcher_education WHERE researcher_id = :rid"),
                 {"rid": researcher.id},
             )
-            education_list = data.get("education") or []
+            education_list = (
+                data.get("researcher_researcher_education")
+                or data.get("education")
+                or []
+            )
             for edu in education_list:
                 if isinstance(edu, dict):
                     session.add(ResearcherEducation(
                         researcher_id=researcher.id,
-                        institution=edu.get("institution") or edu.get("school"),
+                        institution=edu.get("organization_name") or edu.get("institution") or edu.get("school"),
                         degree=edu.get("degree"),
                         field_of_study=edu.get("field_of_study") or edu.get("fieldOfStudy") or edu.get("field"),
                     ))

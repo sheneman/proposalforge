@@ -461,6 +461,7 @@ class SyncService:
             self._cancel_requested = False
             self._current_log_id = None
             self._task = None
+            await self._publish_stats()
 
     async def _fetch_detail(self, opp_id: int, close_date_str: str | None = None) -> dict | None:
         """Fetch opportunity detail from API (concurrent-safe, no DB writes)."""
@@ -591,6 +592,7 @@ class SyncService:
             self._cancel_requested = False
             self._current_log_id = None
             self._task = None
+            await self._publish_stats()
 
 
 sync_service = SyncService()

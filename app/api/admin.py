@@ -149,8 +149,12 @@ async def trigger_sync(request: Request, full: bool = False, refresh: bool = Fal
 
 @router.post("/sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def cancel_sync(request: Request):
-    sync_service.cancel_sync()
+    cancelled = sync_service.cancel_sync()
     await asyncio.sleep(0.5)
+    # If this worker doesn't own the sync (multi-worker), force-clear Redis
+    if not cancelled:
+        from app.services.cache_service import cache_service
+        await cache_service.delete("pf:sync_stats")
     return await sync_live(request)
 
 
@@ -406,8 +410,12 @@ async def trigger_researcher_sync(request: Request):
 
 @router.post("/researcher-sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def cancel_researcher_sync(request: Request):
-    researcher_sync_service.cancel_sync()
+    cancelled = researcher_sync_service.cancel_sync()
     await asyncio.sleep(0.5)
+    # If this worker doesn't own the sync (multi-worker), force-clear Redis
+    if not cancelled:
+        from app.services.cache_service import cache_service
+        await cache_service.delete("pf:researcher_sync_stats")
     return await researcher_sync_live(request)
 
 

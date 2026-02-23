@@ -486,6 +486,7 @@ class ResearcherSyncService:
             self._cancel_requested = False
             self._current_log_id = None
             self._task = None
+            await self._publish_stats()
 
 
 researcher_sync_service = ResearcherSyncService()

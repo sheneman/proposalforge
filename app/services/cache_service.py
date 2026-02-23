@@ -43,6 +43,14 @@ class CacheService:
         except Exception as e:
             logger.warning(f"Cache set error for {key}: {e}")
 
+    async def delete(self, key: str):
+        if not self._redis:
+            return
+        try:
+            await self._redis.delete(key)
+        except Exception as e:
+            logger.warning(f"Cache delete error for {key}: {e}")
+
     async def delete_pattern(self, pattern: str):
         if not self._redis:
             return

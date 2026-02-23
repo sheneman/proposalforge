@@ -4,6 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
 from app.services.sync_service import sync_service
+from app.services.researcher_sync_service import researcher_sync_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,20 @@ def setup_scheduler():
         name="Incremental sync from Grants.gov",
         replace_existing=True,
     )
+    # Researcher sync: Fridays at 01:00 UTC (after CollabNet's 00:05 weekly sync)
+    scheduler.add_job(
+        researcher_sync_service.full_sync,
+        "cron",
+        day_of_week="fri",
+        hour=1,
+        minute=0,
+        id="researcher_sync",
+        name="Weekly researcher sync from CollabNet",
+        replace_existing=True,
+    )
+
     scheduler.start()
-    logger.info(f"Scheduler started: incremental sync every {_interval_hours} hours")
+    logger.info(f"Scheduler started: incremental sync every {_interval_hours} hours, researcher sync Fridays 01:00 UTC")
 
 
 def is_enabled() -> bool:

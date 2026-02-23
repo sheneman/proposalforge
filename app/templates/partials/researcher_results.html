@@ -1,0 +1,105 @@
+<span id="result-count" hx-swap-oob="true">{{ "{:,}".format(total) }}</span>
+{% for r in researchers %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+        <div class="row align-items-center">
+            <div class="col-auto">
+                {% if r.photo_url %}
+                <img src="{{ r.photo_url }}" alt="{{ r.full_name }}" class="rounded-circle"
+                     style="width: 60px; height: 60px; object-fit: cover;"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div class="rounded-circle bg-navy text-white d-flex align-items-center justify-content-center"
+                     style="width: 60px; height: 60px; display: none; font-size: 1.4rem;">
+                    {{ r.first_name[0] if r.first_name else '' }}{{ r.last_name[0] if r.last_name else '' }}
+                </div>
+                {% else %}
+                <div class="rounded-circle bg-navy text-white d-flex align-items-center justify-content-center"
+                     style="width: 60px; height: 60px; font-size: 1.4rem;">
+                    {{ r.first_name[0] if r.first_name else '' }}{{ r.last_name[0] if r.last_name else '' }}
+                </div>
+                {% endif %}
+            </div>
+            <div class="col">
+                <h6 class="mb-1">
+                    <a href="/researcher/{{ r.id }}" class="text-navy text-decoration-none">
+                        {{ r.full_name }}
+                    </a>
+                </h6>
+                {% if r.position_title %}
+                <div class="small text-muted mb-1">
+                    <i class="bi bi-briefcase"></i> {{ r.position_title }}
+                </div>
+                {% endif %}
+                {% if r.affiliations %}
+                <div class="small text-muted mb-1">
+                    <i class="bi bi-building"></i>
+                    {{ r.affiliations[0].organization_name if r.affiliations[0].organization_name else '' }}
+                </div>
+                {% endif %}
+                <div class="d-flex flex-wrap gap-1 mt-1">
+                    {% if r.status == 'ACTIVE' %}
+                    <span class="badge bg-success">Active</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ r.status }}</span>
+                    {% endif %}
+                    {% if r.ai_summary %}
+                    <span class="badge bg-info">AI Summary</span>
+                    {% endif %}
+                    {% for kw in r.keywords[:5] %}
+                    <span class="badge bg-light text-navy">{{ kw.keyword }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="col-auto text-end">
+                {% if r.email %}
+                <a href="mailto:{{ r.email }}" class="btn btn-sm btn-outline-secondary" title="Email">
+                    <i class="bi bi-envelope"></i>
+                </a>
+                {% endif %}
+                {% if r.profile_url %}
+                <a href="{{ r.profile_url }}" target="_blank" rel="noopener"
+                   class="btn btn-sm btn-outline-secondary" title="VERSO Profile">
+                    <i class="bi bi-box-arrow-up-right"></i>
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="text-center py-5">
+    <i class="bi bi-people display-4 text-muted"></i>
+    <p class="text-muted mt-2">No researchers found. Try adjusting your filters.</p>
+</div>
+{% endfor %}
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<nav aria-label="Researcher results pages" class="mt-3">
+    <ul class="pagination justify-content-center">
+        {% if page > 1 %}
+        <li class="page-item">
+            <a class="page-link" href="#" onclick="goToResearcherPage({{ page - 1 }}); return false;">&laquo; Prev</a>
+        </li>
+        {% endif %}
+
+        {% for p in range(1, total_pages + 1) %}
+            {% if p == page %}
+            <li class="page-item active"><span class="page-link">{{ p }}</span></li>
+            {% elif p <= 3 or p > total_pages - 3 or (p >= page - 2 and p <= page + 2) %}
+            <li class="page-item">
+                <a class="page-link" href="#" onclick="goToResearcherPage({{ p }}); return false;">{{ p }}</a>
+            </li>
+            {% elif p == 4 or p == total_pages - 3 %}
+            <li class="page-item disabled"><span class="page-link">...</span></li>
+            {% endif %}
+        {% endfor %}
+
+        {% if page < total_pages %}
+        <li class="page-item">
+            <a class="page-link" href="#" onclick="goToResearcherPage({{ page + 1 }}); return false;">Next &raquo;</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}

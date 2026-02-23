@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import Opportunity
 from app.services.search_service import search_service
+from app.services.researcher_search_service import researcher_search_service
 from app.services.sync_service import sync_service
 
 logger = logging.getLogger(__name__)
@@ -101,4 +102,65 @@ async def opportunity_detail(request: Request, opp_id: int, db: AsyncSession = D
     return templates.TemplateResponse("opportunity.html", {
         "request": request,
         "opp": opp,
+    })
+
+
+@router.get("/researchers", response_class=HTMLResponse)
+async def researchers_page(
+    request: Request,
+    q: str | None = None,
+    department: str | None = None,
+    keyword: str | None = None,
+    status: str | None = None,
+    has_summary: bool | None = None,
+    sort_by: str = "name",
+    sort_order: str = "asc",
+    page: int = 1,
+    db: AsyncSession = Depends(get_db),
+):
+    results = await researcher_search_service.search(
+        session=db,
+        query=q,
+        department=department,
+        keyword=keyword,
+        status=status,
+        has_summary=has_summary,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page=page,
+    )
+    facets = await researcher_search_service.get_facets(db)
+
+    context = {
+        "request": request,
+        "researchers": results["researchers"],
+        "total": results["total"],
+        "page": results["page"],
+        "total_pages": results["total_pages"],
+        "facets": facets,
+        "query": q or "",
+        "department": department or "",
+        "keyword_filter": keyword or "",
+        "status": status or "",
+        "has_summary": has_summary,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+    }
+
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse("partials/researcher_results.html", context)
+
+    return templates.TemplateResponse("researchers.html", context)
+
+
+@router.get("/researcher/{researcher_id}", response_class=HTMLResponse)
+async def researcher_detail(request: Request, researcher_id: int, db: AsyncSession = Depends(get_db)):
+    detail = await researcher_search_service.get_researcher_detail(db, researcher_id)
+    if not detail:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+
+    return templates.TemplateResponse("researcher.html", {
+        "request": request,
+        "researcher": detail["researcher"],
+        "publications": detail["publications"],
     })

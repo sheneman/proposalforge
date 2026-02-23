@@ -1,0 +1,43 @@
+{% if matches %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-header bg-white border-0">
+        <h6 class="mb-0 text-navy"><i class="bi bi-people"></i> Matching Researchers</h6>
+    </div>
+    <div class="card-body">
+        {% for m in matches %}
+        <div class="d-flex align-items-center gap-2 mb-3 {% if not loop.last %}border-bottom pb-2{% endif %}">
+            {% if m.photo_url %}
+            <img src="{{ m.photo_url }}" alt="{{ m.full_name }}" class="rounded-circle"
+                 style="width: 40px; height: 40px; object-fit: cover;"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="rounded-circle bg-navy text-white d-flex align-items-center justify-content-center"
+                 style="width: 40px; height: 40px; display: none; font-size: 0.9rem;">
+                {{ m.full_name.split()[0][0] if m.full_name else '' }}{{ m.full_name.split()[-1][0] if m.full_name and m.full_name.split()|length > 1 else '' }}
+            </div>
+            {% else %}
+            <div class="rounded-circle bg-navy text-white d-flex align-items-center justify-content-center"
+                 style="width: 40px; height: 40px; font-size: 0.9rem;">
+                {{ m.full_name.split()[0][0] if m.full_name else '' }}{{ m.full_name.split()[-1][0] if m.full_name and m.full_name.split()|length > 1 else '' }}
+            </div>
+            {% endif %}
+            <div class="flex-grow-1">
+                <a href="/researcher/{{ m.researcher_id }}" class="text-navy text-decoration-none fw-bold small">
+                    {{ m.full_name }}
+                </a>
+                {% if m.position_title %}
+                <div class="small text-muted">{{ m.position_title }}</div>
+                {% endif %}
+                {% if m.keywords %}
+                <div class="d-flex flex-wrap gap-1 mt-1">
+                    {% for kw in m.keywords[:3] %}
+                    <span class="badge bg-light text-navy" style="font-size: 0.65rem;">{{ kw }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            <span class="badge bg-navy">{{ "%.0f" | format(m.score * 100) }}%</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

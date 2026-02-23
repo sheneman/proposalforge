@@ -1,0 +1,130 @@
+{% if is_syncing %}
+<div class="d-flex align-items-center mb-3">
+    <span class="badge bg-primary fs-6 me-3">
+        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        Syncing
+    </span>
+    <span class="text-muted">
+        Researcher sync in progress &mdash; Phase: {{ stats.get("phase", "starting") | title }}
+    </span>
+</div>
+
+{% set total = stats.get("total", 0) %}
+{% set success = stats.get("success", 0) %}
+{% set errors = stats.get("errors", 0) %}
+{% set processed = success + errors %}
+{% set pct = ((processed / total * 100) | round(1)) if total > 0 else 0 %}
+
+<div class="progress mb-3" style="height: 24px;">
+    <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
+         role="progressbar"
+         style="width: {{ pct }}%">
+        {{ pct }}%
+    </div>
+</div>
+
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold">{{ "{:,}".format(processed) }} / {{ "{:,}".format(total) }}</div>
+        <small class="text-muted">Items Processed</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-success">{{ "{:,}".format(stats.get("researchers_synced", 0)) }}</div>
+        <small class="text-muted">Researchers</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-info">{{ "{:,}".format(stats.get("publications_synced", 0)) }}</div>
+        <small class="text-muted">Publications</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-primary">{{ "{:,}".format(stats.get("summaries_matched", 0)) }}</div>
+        <small class="text-muted">Summaries</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
+        <small class="text-muted">Errors</small>
+    </div>
+    <div class="col">
+        {% if elapsed %}
+        <div class="fw-bold">{{ elapsed | int }}s</div>
+        {% else %}
+        <div class="fw-bold">-</div>
+        {% endif %}
+        <small class="text-muted">Elapsed</small>
+    </div>
+</div>
+
+{% if stats.get("last_error") %}
+<div class="alert alert-warning py-2 small mb-3">
+    <i class="bi bi-exclamation-triangle"></i> Last error: {{ stats.get("last_error") }}
+</div>
+{% endif %}
+
+{% if is_admin %}
+<div class="text-end">
+    <button class="btn btn-danger btn-sm"
+            hx-post="/admin/researcher-sync/cancel"
+            hx-target="#researcher-sync-live"
+            hx-swap="innerHTML">
+        <i class="bi bi-stop-circle"></i> Cancel Sync
+    </button>
+</div>
+{% endif %}
+
+{% else %}
+
+<div class="d-flex align-items-center mb-3">
+    {% if stats.get("error") %}
+    <span class="badge bg-danger fs-6 me-3">Error</span>
+    <span class="text-muted">Last sync failed: {{ stats.get("error", "")[:100] }}</span>
+    {% elif last_sync %}
+    <span class="badge bg-success fs-6 me-3">Idle</span>
+    <span class="text-muted">Last sync: {{ last_sync.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+    {% else %}
+    <span class="badge bg-secondary fs-6 me-3">Idle</span>
+    <span class="text-muted">No researcher sync has been run yet</span>
+    {% endif %}
+</div>
+
+{% if stats.get("completed") %}
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold text-success">{{ "{:,}".format(stats.get("researchers_synced", 0)) }}</div>
+        <small class="text-muted">Researchers</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-info">{{ "{:,}".format(stats.get("publications_synced", 0)) }}</div>
+        <small class="text-muted">Publications</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-primary">{{ "{:,}".format(stats.get("summaries_matched", 0)) }}</div>
+        <small class="text-muted">Summaries</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-danger">{{ "{:,}".format(stats.get("errors", 0)) }}</div>
+        <small class="text-muted">Errors</small>
+    </div>
+</div>
+{% endif %}
+
+{% if is_admin %}
+<div class="d-flex gap-2 flex-wrap">
+    <button class="btn btn-primary btn-sm"
+            hx-post="/admin/researcher-sync/trigger"
+            hx-target="#researcher-sync-live"
+            hx-swap="innerHTML">
+        <i class="bi bi-arrow-repeat"></i> Sync Researchers
+    </button>
+    <button class="btn btn-outline-primary btn-sm"
+            hx-post="/admin/matches/recompute"
+            hx-target="#match-recompute-status"
+            hx-swap="innerHTML">
+        <i class="bi bi-diagram-3"></i> Recompute Matches
+    </button>
+</div>
+<div id="match-recompute-status" class="mt-2"></div>
+{% else %}
+<div class="text-muted small"><i class="bi bi-lock"></i> Log in to manage researcher syncs</div>
+{% endif %}
+
+{% endif %}

@@ -9,6 +9,15 @@ from app.models.category import (
 from app.models.enums import OpportunityStatus
 from app.models.sync_log import SyncLog
 from app.models.site_setting import SiteSetting
+from app.models.researcher import (
+    Researcher,
+    ResearcherKeyword,
+    ResearcherAffiliation,
+    ResearcherEducation,
+    Publication,
+    ResearcherPublication,
+    ResearcherOpportunityMatch,
+)
 
 __all__ = [
     "Agency",
@@ -20,4 +29,11 @@ __all__ = [
     "OpportunityStatus",
     "SyncLog",
     "SiteSetting",
+    "Researcher",
+    "ResearcherKeyword",
+    "ResearcherAffiliation",
+    "ResearcherEducation",
+    "Publication",
+    "ResearcherPublication",
+    "ResearcherOpportunityMatch",
 ]

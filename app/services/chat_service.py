@@ -130,6 +130,55 @@ WHERE award_ceiling IS NOT NULL
 ORDER BY award_ceiling DESC
 LIMIT 5
 ```
+
+Q: How many researchers are in the database?
+```sql
+SELECT COUNT(*) AS total_researchers FROM researchers LIMIT 1
+```
+
+Q: Researchers with AI summaries
+```sql
+SELECT full_name, position_title, LEFT(ai_summary, 200) AS summary_preview
+FROM researchers
+WHERE ai_summary IS NOT NULL AND ai_summary != ''
+ORDER BY full_name
+LIMIT 20
+```
+
+Q: Top departments by researcher count
+```sql
+SELECT ra.organization_name AS department, COUNT(DISTINCT ra.researcher_id) AS num_researchers
+FROM researcher_affiliations ra
+WHERE ra.organization_name IS NOT NULL
+GROUP BY ra.organization_name
+ORDER BY num_researchers DESC
+LIMIT 15
+```
+
+Q: Researchers with most publications
+```sql
+SELECT r.full_name, r.position_title, COUNT(rp.publication_id) AS num_publications
+FROM researchers r
+JOIN researcher_publications rp ON rp.researcher_id = r.id
+GROUP BY r.id, r.full_name, r.position_title
+ORDER BY num_publications DESC
+LIMIT 15
+```
+
+Q: Top researcher-opportunity matches
+```sql
+SELECT r.full_name, o.title, rom.score
+FROM researcher_opportunity_matches rom
+JOIN researchers r ON r.id = rom.researcher_id
+JOIN opportunities o ON o.id = rom.opportunity_id
+ORDER BY rom.score DESC
+LIMIT 20
+```
+
+Q: How many publications are in the database?
+```sql
+SELECT COUNT(*) AS total_publications FROM publications LIMIT 1
+```
 """
 
 # Query templates for pattern matching
@@ -173,6 +222,31 @@ QUERY_TEMPLATES = [
         "patterns": ["team.based", "multi.institution", "multi.disciplinary", "multi.jurisdiction", "collaborative"],
         "template": "SELECT title, award_ceiling, status FROM opportunities WHERE is_team_based = 1 ORDER BY award_ceiling DESC LIMIT 20",
         "description": "Classification flag queries",
+    },
+    {
+        "patterns": ["researcher.*count", "how many researcher", "total researcher", "number of researcher"],
+        "template": "SELECT COUNT(*) AS total_researchers FROM researchers LIMIT 1",
+        "description": "Total researcher count",
+    },
+    {
+        "patterns": ["researcher.*department", "department.*researcher", "researchers by department"],
+        "template": "SELECT ra.organization_name AS department, COUNT(DISTINCT ra.researcher_id) AS num_researchers FROM researcher_affiliations ra WHERE ra.organization_name IS NOT NULL GROUP BY ra.organization_name ORDER BY num_researchers DESC LIMIT 20",
+        "description": "Researchers by department",
+    },
+    {
+        "patterns": ["most publications", "top.*publication", "publication.*count", "prolific researcher"],
+        "template": "SELECT r.full_name, r.position_title, COUNT(rp.publication_id) AS num_publications FROM researchers r JOIN researcher_publications rp ON rp.researcher_id = r.id GROUP BY r.id, r.full_name, r.position_title ORDER BY num_publications DESC LIMIT 15",
+        "description": "Researchers with most publications",
+    },
+    {
+        "patterns": ["match.*score", "best match", "top match", "researcher.*match.*opportunity"],
+        "template": "SELECT r.full_name, o.title, rom.score FROM researcher_opportunity_matches rom JOIN researchers r ON r.id = rom.researcher_id JOIN opportunities o ON o.id = rom.opportunity_id ORDER BY rom.score DESC LIMIT 20",
+        "description": "Top researcher-opportunity matches",
+    },
+    {
+        "patterns": ["publication.*count", "how many publication", "total publication"],
+        "template": "SELECT COUNT(*) AS total_publications FROM publications LIMIT 1",
+        "description": "Total publication count",
     },
 ]
 

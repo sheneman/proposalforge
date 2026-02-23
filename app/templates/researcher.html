@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}{{ researcher.full_name }} - ProposalForge{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 mb-3">
+        <a href="/researchers" class="text-navy text-decoration-none">
+            <i class="bi bi-arrow-left"></i> Back to Researchers
+        </a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <!-- Profile Card -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body">
+                <div class="d-flex align-items-start gap-3 mb-3">
+                    {% if researcher.photo_url %}
+                    <img src="{{ researcher.photo_url }}" alt="{{ researcher.full_name }}"
+                         class="rounded-circle" style="width: 80px; height: 80px; object-fit: cover;"
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="rounded-circle bg-navy text-white d-flex align-items-center justify-content-center"
+                         style="width: 80px; height: 80px; display: none; font-size: 1.8rem;">
+                        {{ researcher.first_name[0] if researcher.first_name else '' }}{{ researcher.last_name[0] if researcher.last_name else '' }}
+                    </div>
+                    {% else %}
+                    <div class="rounded-circle bg-navy text-white d-flex align-items-center justify-content-center"
+                         style="width: 80px; height: 80px; font-size: 1.8rem;">
+                        {{ researcher.first_name[0] if researcher.first_name else '' }}{{ researcher.last_name[0] if researcher.last_name else '' }}
+                    </div>
+                    {% endif %}
+                    <div>
+                        <h4 class="text-navy mb-1">{{ researcher.full_name }}</h4>
+                        {% if researcher.position_title %}
+                        <div class="text-muted mb-1">{{ researcher.position_title }}</div>
+                        {% endif %}
+                        {% if researcher.affiliations %}
+                        <div class="text-muted small">
+                            {% for aff in researcher.affiliations %}
+                            <span class="me-2"><i class="bi bi-building"></i> {{ aff.organization_name }}</span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    {% if researcher.status == 'ACTIVE' %}
+                    <span class="badge bg-success fs-6">Active</span>
+                    {% else %}
+                    <span class="badge bg-secondary fs-6">{{ researcher.status }}</span>
+                    {% endif %}
+
+                    {% for kw in researcher.keywords %}
+                    <span class="badge bg-light text-navy">{{ kw.keyword }}</span>
+                    {% endfor %}
+                </div>
+
+                <!-- Contact -->
+                <div class="row g-3 mb-4">
+                    {% if researcher.email %}
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Email</small>
+                            <a href="mailto:{{ researcher.email }}">{{ researcher.email }}</a>
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if researcher.phone %}
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">Phone</small>
+                            {{ researcher.phone }}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if researcher.profile_url %}
+                    <div class="col-sm-6">
+                        <div class="border rounded p-2">
+                            <small class="text-muted d-block">VERSO Profile</small>
+                            <a href="{{ researcher.profile_url }}" target="_blank" rel="noopener">
+                                View Profile <i class="bi bi-box-arrow-up-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Education -->
+                {% if researcher.education %}
+                <h5 class="text-navy">Education</h5>
+                <ul class="list-group list-group-flush mb-4">
+                    {% for edu in researcher.education %}
+                    <li class="list-group-item px-0">
+                        {% if edu.degree %}<strong>{{ edu.degree }}</strong>{% endif %}
+                        {% if edu.field_of_study %} in {{ edu.field_of_study }}{% endif %}
+                        {% if edu.institution %}<br><small class="text-muted">{{ edu.institution }}</small>{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+
+                <!-- AI Summary -->
+                {% if researcher.ai_summary %}
+                <h5 class="text-navy"><i class="bi bi-robot"></i> AI Research Summary</h5>
+                <div class="bg-light rounded p-3 mb-4">
+                    {{ researcher.ai_summary }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Tabs: Publications / Matching Opportunities -->
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-publications">
+                    <i class="bi bi-journal-text"></i> Publications ({{ publications | length }})
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-matches">
+                    <i class="bi bi-diagram-3"></i> Matching Opportunities
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <!-- Publications Tab -->
+            <div class="tab-pane fade show active" id="tab-publications">
+                {% if publications %}
+                {% for pub in publications %}
+                <div class="card border-0 shadow-sm mb-2">
+                    <div class="card-body py-2">
+                        <h6 class="mb-1">
+                            {% if pub.doi %}
+                            <a href="https://doi.org/{{ pub.doi }}" target="_blank" rel="noopener" class="text-navy text-decoration-none">
+                                {{ pub.title }}
+                            </a>
+                            {% elif pub.uri %}
+                            <a href="{{ pub.uri }}" target="_blank" rel="noopener" class="text-navy text-decoration-none">
+                                {{ pub.title }}
+                            </a>
+                            {% else %}
+                            {{ pub.title }}
+                            {% endif %}
+                        </h6>
+                        <div class="small text-muted">
+                            {% if pub.publication_date %}
+                            <span class="me-2"><i class="bi bi-calendar"></i> {{ pub.publication_date }}</span>
+                            {% endif %}
+                            {% if pub.resource_type %}
+                            <span class="me-2"><i class="bi bi-tag"></i> {{ pub.resource_type }}</span>
+                            {% endif %}
+                            {% if pub.affiliation %}
+                            <span><i class="bi bi-building"></i> {{ pub.affiliation }}</span>
+                            {% endif %}
+                        </div>
+                        {% if pub.publication_info %}
+                        <div class="small text-muted fst-italic">{{ pub.publication_info[:200] }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="bi bi-journal-text display-6 text-muted"></i>
+                    <p class="text-muted mt-2">No publications found.</p>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Matching Opportunities Tab -->
+            <div class="tab-pane fade" id="tab-matches">
+                <div id="researcher-matches"
+                     hx-get="/api/matches/researcher/{{ researcher.id }}/opportunities?limit=20"
+                     hx-trigger="intersect once"
+                     hx-swap="innerHTML">
+                    <div class="text-center py-3">
+                        <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                        <span class="text-muted ms-2">Loading matches...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="col-md-4">
+        <!-- Quick Stats -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white border-0">
+                <h6 class="mb-0 text-navy"><i class="bi bi-graph-up"></i> Quick Stats</h6>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">Publications</span>
+                    <strong>{{ publications | length }}</strong>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">Keywords</span>
+                    <strong>{{ researcher.keywords | length }}</strong>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">Affiliations</span>
+                    <strong>{{ researcher.affiliations | length }}</strong>
+                </div>
+                <div class="d-flex justify-content-between">
+                    <span class="text-muted">AI Summary</span>
+                    <strong>{{ 'Yes' if researcher.ai_summary else 'No' }}</strong>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body">
+                {% if researcher.profile_url %}
+                <a href="{{ researcher.profile_url }}" target="_blank" rel="noopener"
+                   class="btn btn-navy w-100 mb-2">
+                    <i class="bi bi-box-arrow-up-right"></i> View VERSO Profile
+                </a>
+                {% endif %}
+                {% if researcher.email %}
+                <a href="mailto:{{ researcher.email }}" class="btn btn-outline-navy w-100">
+                    <i class="bi bi-envelope"></i> Contact Researcher
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

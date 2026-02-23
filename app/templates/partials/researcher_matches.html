@@ -1,0 +1,41 @@
+{% if matches %}
+{% for m in matches %}
+<div class="card border-0 shadow-sm mb-2">
+    <div class="card-body py-2">
+        <div class="d-flex justify-content-between align-items-start">
+            <div>
+                <h6 class="mb-1">
+                    <a href="/opportunity/{{ m.opportunity_id }}" class="text-navy text-decoration-none">
+                        {{ m.title }}
+                    </a>
+                </h6>
+                <div class="small text-muted">
+                    {% if m.agency_code %}
+                    <span class="me-2"><i class="bi bi-building"></i> {{ m.agency_code }}</span>
+                    {% endif %}
+                    {% if m.close_date %}
+                    <span class="me-2"><i class="bi bi-calendar"></i> {{ m.close_date }}</span>
+                    {% endif %}
+                    {% if m.award_ceiling %}
+                    <span><i class="bi bi-currency-dollar"></i> ${{ "{:,.0f}".format(m.award_ceiling) }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="text-end">
+                <span class="badge bg-navy">{{ "%.0f" | format(m.score * 100) }}%</span>
+                {% if m.status == 'posted' %}
+                <span class="badge bg-success">Posted</span>
+                {% elif m.status == 'forecasted' %}
+                <span class="badge bg-info">Forecasted</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="text-center py-4">
+    <i class="bi bi-diagram-3 display-6 text-muted"></i>
+    <p class="text-muted mt-2">No matching opportunities found. Matches are computed after researcher sync.</p>
+</div>
+{% endif %}

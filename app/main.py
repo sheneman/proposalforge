@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import engine, Base
 from app.services.cache_service import cache_service
 from app.services.sync_service import sync_service
+from app.services.researcher_sync_service import researcher_sync_service
 from app.tasks.scheduler import setup_scheduler
 
 logging.basicConfig(
@@ -50,6 +51,8 @@ async def lifespan(app: FastAPI):
         setup_scheduler()
         if settings.SYNC_ON_STARTUP:
             asyncio.create_task(sync_service.full_sync())
+        if settings.RESEARCHER_SYNC_ON_STARTUP:
+            asyncio.create_task(researcher_sync_service.full_sync())
 
     yield
 
@@ -110,6 +113,8 @@ from app.api.opportunities import router as opportunities_router
 from app.api.sync import router as sync_router
 from app.api.admin import router as admin_router
 from app.api.analytics import router as analytics_router
+from app.api.researchers import router as researchers_router
+from app.api.matches import router as matches_router
 
 app.include_router(pages_router)
 app.include_router(search_router)
@@ -117,3 +122,5 @@ app.include_router(opportunities_router)
 app.include_router(sync_router)
 app.include_router(admin_router)
 app.include_router(analytics_router)
+app.include_router(researchers_router)
+app.include_router(matches_router)

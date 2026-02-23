@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "openai/gpt-oss-120b"
     LLM_API_KEY: str = "not-needed"
 
+    # CollabNet Data API (researcher data)
+    COLLABNET_API_URL: str = "https://collabnet-api.nkn.uidaho.edu"
+    COLLABNET_API_KEY: str = ""
+    RESEARCHER_SYNC_ON_STARTUP: bool = False
+
     class Config:
         env_file = ".env"
         extra = "ignore"

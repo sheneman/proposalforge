@@ -11,3 +11,4 @@ apscheduler==3.10.4
 python-multipart==0.0.9
 itsdangerous==2.1.2
 openai>=1.12.0
+scikit-learn>=1.4.0

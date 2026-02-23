@@ -12,6 +12,8 @@ from app.database import get_db
 from app.models import Opportunity, Agency
 from app.models.sync_log import SyncLog
 from app.services.sync_service import sync_service
+from app.services.researcher_sync_service import researcher_sync_service
+from app.services.match_service import match_service
 from app.services.settings_service import settings_service
 from app.tasks import scheduler
 
@@ -332,3 +334,88 @@ async def test_llm_connection(request: Request, db: AsyncSession = Depends(get_d
             "success": False,
             "message": str(e)[:200],
         })
+
+
+# --- Researcher Data Sync ---
+
+@router.get("/researcher-sync/live", response_class=HTMLResponse)
+async def researcher_sync_live(request: Request, db: AsyncSession = Depends(get_db)):
+    if researcher_sync_service.is_syncing:
+        stats = dict(researcher_sync_service.sync_stats)
+        elapsed = None
+        if stats.get("started"):
+            try:
+                started = datetime.fromisoformat(stats["started"])
+                elapsed = (datetime.utcnow() - started).total_seconds()
+            except (ValueError, TypeError):
+                pass
+        await researcher_sync_service._publish_stats()
+        return templates.TemplateResponse("partials/admin/researcher_sync_live.html", {
+            "request": request,
+            "is_syncing": True,
+            "stats": stats,
+            "elapsed": elapsed,
+            "last_sync": researcher_sync_service.last_sync,
+            "is_admin": _is_admin(request),
+        })
+
+    shared = await researcher_sync_service.get_shared_stats()
+    if shared and shared.get("is_syncing"):
+        stats = shared["stats"]
+        elapsed = None
+        if stats.get("started"):
+            try:
+                started = datetime.fromisoformat(stats["started"])
+                elapsed = (datetime.utcnow() - started).total_seconds()
+            except (ValueError, TypeError):
+                pass
+        return templates.TemplateResponse("partials/admin/researcher_sync_live.html", {
+            "request": request,
+            "is_syncing": True,
+            "stats": stats,
+            "elapsed": elapsed,
+            "last_sync": None,
+            "is_admin": _is_admin(request),
+        })
+
+    last_log = (await db.execute(
+        select(SyncLog)
+        .where(SyncLog.sync_type == "researcher_full", SyncLog.status == "completed")
+        .order_by(SyncLog.completed_at.desc()).limit(1)
+    )).scalar_one_or_none()
+
+    last_sync = last_log.completed_at if last_log else researcher_sync_service.last_sync
+
+    return templates.TemplateResponse("partials/admin/researcher_sync_live.html", {
+        "request": request,
+        "is_syncing": False,
+        "stats": shared.get("stats", {}) if shared else {},
+        "elapsed": None,
+        "last_sync": last_sync,
+        "is_admin": _is_admin(request),
+    })
+
+
+@router.post("/researcher-sync/trigger", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def trigger_researcher_sync(request: Request):
+    if not researcher_sync_service.is_syncing:
+        asyncio.create_task(researcher_sync_service.full_sync())
+    await asyncio.sleep(0.2)
+    return await researcher_sync_live(request)
+
+
+@router.post("/researcher-sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def cancel_researcher_sync(request: Request):
+    researcher_sync_service.cancel_sync()
+    await asyncio.sleep(0.5)
+    return await researcher_sync_live(request)
+
+
+@router.post("/matches/recompute", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def trigger_match_recompute(request: Request):
+    asyncio.create_task(match_service.recompute_all_matches())
+    return HTMLResponse(
+        '<div class="alert alert-success py-2">'
+        '<i class="bi bi-check-circle"></i> Match recomputation started in the background.'
+        '</div>'
+    )

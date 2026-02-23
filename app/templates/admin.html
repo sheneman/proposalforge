@@ -89,6 +89,21 @@
         </div>
     </div>
 </div>
+<!-- Section F: Researcher Data -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-navy text-white">
+        <i class="bi bi-people"></i> Researcher Data (CollabNet)
+    </div>
+    <div class="card-body" id="researcher-sync-live"
+         hx-get="/admin/researcher-sync/live"
+         hx-trigger="load, every 3s"
+         hx-swap="innerHTML">
+        <div class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+            <span class="text-muted ms-2">Loading...</span>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}

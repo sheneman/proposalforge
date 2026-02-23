@@ -169,6 +169,13 @@
             </div>
         </div>
 
+        <!-- Matching Researchers (lazy-loaded) -->
+        <div id="matching-researchers"
+             hx-get="/api/matches/opportunity/{{ opp.opportunity_id }}/researchers?limit=10"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+        </div>
+
         <!-- Contact Info -->
         {% if opp.contact_name or opp.contact_email or opp.contact_phone %}
         <div class="card border-0 shadow-sm mb-3">

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Researchers - ProposalForge{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Left Sidebar: Filters -->
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-navy text-white">
+                <h6 class="mb-0"><i class="bi bi-funnel"></i> Filters</h6>
+            </div>
+            <div class="card-body" id="filters-panel">
+                <form id="researcher-filters"
+                      hx-get="/researchers"
+                      hx-target="#researcher-results"
+                      hx-push-url="true"
+                      hx-trigger="change"
+                      hx-indicator="#loading-indicator">
+
+                    <!-- Search box -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Search</label>
+                        <input type="text" class="form-control form-control-sm" name="q"
+                               value="{{ query }}" placeholder="Name, keywords, research..."
+                               hx-trigger="keyup changed delay:500ms">
+                    </div>
+
+                    <!-- Status -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Status</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="status" value=""
+                                   id="status-all" {{ 'checked' if not status }}>
+                            <label class="form-check-label small" for="status-all">All</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="status" value="ACTIVE"
+                                   id="status-active" {{ 'checked' if status == 'ACTIVE' }}>
+                            <label class="form-check-label small" for="status-active">Active</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="status" value="INACTIVE"
+                                   id="status-inactive" {{ 'checked' if status == 'INACTIVE' }}>
+                            <label class="form-check-label small" for="status-inactive">Inactive</label>
+                        </div>
+                    </div>
+
+                    <!-- Has AI Summary -->
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="has_summary" value="true"
+                                   id="has-summary" {{ 'checked' if has_summary }}>
+                            <label class="form-check-label small" for="has-summary">Has AI Summary</label>
+                        </div>
+                    </div>
+
+                    <!-- Departments -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Department</label>
+                        <input type="text" class="form-control form-control-sm mb-2"
+                               id="dept-filter-search" placeholder="Filter departments..."
+                               oninput="filterDepartments(this.value)">
+                        <div class="dept-list" style="max-height: 200px; overflow-y: auto;">
+                            {% for dept in facets.departments[:30] %}
+                            <div class="form-check dept-item">
+                                <input class="form-check-input" type="radio" name="department"
+                                       value="{{ dept.name }}" id="dept-{{ loop.index }}"
+                                       {{ 'checked' if department == dept.name }}>
+                                <label class="form-check-label small" for="dept-{{ loop.index }}">
+                                    {{ dept.name }} <span class="badge bg-light text-dark">{{ dept.count }}</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Top Keywords -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">Keyword</label>
+                        <div style="max-height: 200px; overflow-y: auto;">
+                            {% for kw in facets.keywords[:20] %}
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="keyword"
+                                       value="{{ kw.keyword }}" id="kw-{{ loop.index }}"
+                                       {{ 'checked' if keyword_filter == kw.keyword }}>
+                                <label class="form-check-label small" for="kw-{{ loop.index }}">
+                                    {{ kw.keyword }} <span class="badge bg-light text-dark">{{ kw.count }}</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Sort -->
+                    <input type="hidden" name="sort_by" value="{{ sort_by }}">
+                    <input type="hidden" name="sort_order" value="{{ sort_order }}">
+                    <input type="hidden" name="page" value="1" id="page-input">
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content: Researcher Results -->
+    <div class="col-md-9">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+                <h5 class="text-navy mb-0">
+                    <span id="result-count">{{ total }}</span> Researchers Found
+                </h5>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <div id="loading-indicator" class="htmx-indicator">
+                    <div class="spinner-border spinner-border-sm text-navy" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <select class="form-select form-select-sm" style="width: auto;"
+                        onchange="updateResearcherSort(this.value)">
+                    <option value="name:asc" {{ 'selected' if sort_by == 'name' and sort_order == 'asc' }}>Name A-Z</option>
+                    <option value="name:desc" {{ 'selected' if sort_by == 'name' and sort_order == 'desc' }}>Name Z-A</option>
+                    <option value="updated:desc" {{ 'selected' if sort_by == 'updated' and sort_order == 'desc' }}>Recently Updated</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="researcher-results">
+            {% include "partials/researcher_results.html" %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/researchers.js"></script>
+{% endblock %}

@@ -40,3 +40,6 @@ alembic/__pycache__/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Local docs
+INTEGRATION_GUIDE.md

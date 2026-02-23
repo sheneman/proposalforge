@@ -49,6 +49,7 @@ class ResearcherSyncService:
         self.sync_stats: dict = {}
         self._cancel_requested = False
         self._current_log_id: int | None = None
+        self._task: asyncio.Task | None = None
 
     async def _publish_stats(self):
         try:
@@ -94,6 +95,9 @@ class ResearcherSyncService:
     def cancel_sync(self):
         if self.is_syncing:
             self._cancel_requested = True
+            # Cancel the asyncio task to interrupt any pending await (e.g. HTTP requests)
+            if self._task and not self._task.done():
+                self._task.cancel()
             return True
         return False
 
@@ -325,6 +329,7 @@ class ResearcherSyncService:
 
         self.is_syncing = True
         self._cancel_requested = False
+        self._task = asyncio.current_task()
         self.sync_stats = {
             "started": datetime.utcnow().isoformat(),
             "type": "researcher_full",
@@ -464,6 +469,13 @@ class ResearcherSyncService:
             logger.info(f"Researcher sync completed: {self.sync_stats}")
             await self._finish_sync_log(log_id, "completed", self.sync_stats)
 
+        except asyncio.CancelledError:
+            logger.info("Researcher sync cancelled via task cancellation")
+            self.sync_stats["cancelled"] = True
+            try:
+                await self._finish_sync_log(log_id, "cancelled", self.sync_stats, "Cancelled by user")
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Researcher sync failed: {e}", exc_info=True)
             self.sync_stats["error"] = str(e)
@@ -473,6 +485,7 @@ class ResearcherSyncService:
             self.is_syncing = False
             self._cancel_requested = False
             self._current_log_id = None
+            self._task = None
 
 
 researcher_sync_service = ResearcherSyncService()

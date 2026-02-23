@@ -40,6 +40,7 @@ class SyncService:
         self.sync_stats: dict = {}
         self._cancel_requested = False
         self._current_log_id: int | None = None
+        self._task: asyncio.Task | None = None
 
     async def _publish_stats(self):
         """Write current sync stats to Redis so all workers can read them."""
@@ -165,6 +166,9 @@ class SyncService:
         """Request cancellation of the running sync."""
         if self.is_syncing:
             self._cancel_requested = True
+            # Cancel the asyncio task to interrupt any pending await (e.g. HTTP requests)
+            if self._task and not self._task.done():
+                self._task.cancel()
             return True
         return False
 
@@ -375,6 +379,7 @@ class SyncService:
 
         self.is_syncing = True
         self._cancel_requested = False
+        self._task = asyncio.current_task()
         sync_type = "refresh" if skip_discovery else "full"
         self.sync_stats = {
             "started": datetime.utcnow().isoformat(),
@@ -439,6 +444,13 @@ class SyncService:
 
             await self._run_fetch_phase(items, close_dates, log_id)
 
+        except asyncio.CancelledError:
+            logger.info("Sync cancelled via task cancellation")
+            self.sync_stats["cancelled"] = True
+            try:
+                await self._finish_sync_log(log_id, "cancelled", self.sync_stats, "Cancelled by user")
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Full sync failed: {e}", exc_info=True)
             self.sync_stats["error"] = str(e)
@@ -448,6 +460,7 @@ class SyncService:
             self.is_syncing = False
             self._cancel_requested = False
             self._current_log_id = None
+            self._task = None
 
     async def _fetch_detail(self, opp_id: int, close_date_str: str | None = None) -> dict | None:
         """Fetch opportunity detail from API (concurrent-safe, no DB writes)."""
@@ -501,6 +514,7 @@ class SyncService:
 
         self.is_syncing = True
         self._cancel_requested = False
+        self._task = asyncio.current_task()
         self.sync_stats = {
             "started": datetime.utcnow().isoformat(),
             "type": "incremental",
@@ -560,6 +574,13 @@ class SyncService:
             logger.info(f"Incremental sync completed: {self.sync_stats}")
             await self._finish_sync_log(log_id, "completed", self.sync_stats)
 
+        except asyncio.CancelledError:
+            logger.info("Incremental sync cancelled via task cancellation")
+            self.sync_stats["cancelled"] = True
+            try:
+                await self._finish_sync_log(log_id, "cancelled", self.sync_stats, "Cancelled by user")
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Incremental sync failed: {e}", exc_info=True)
             self.sync_stats["error"] = str(e)
@@ -569,6 +590,7 @@ class SyncService:
             self.is_syncing = False
             self._cancel_requested = False
             self._current_log_id = None
+            self._task = None
 
 
 sync_service = SyncService()

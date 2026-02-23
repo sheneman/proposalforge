@@ -303,18 +303,53 @@ class ResearcherSyncService:
                     result = await session.execute(stmt)
                     researcher = result.scalar_one_or_none()
 
-                # Fall back to name matching
+                # Fall back to first_name + last_name matching
                 if not researcher:
-                    name = summary.get("name") or summary.get("researcher_name") or ""
+                    first = (summary.get("first_name") or "").strip()
+                    last = (summary.get("last_name") or "").strip()
+                    if first and last:
+                        stmt = select(Researcher).where(
+                            Researcher.first_name == first,
+                            Researcher.last_name == last,
+                        )
+                        result = await session.execute(stmt)
+                        researcher = result.scalar_one_or_none()
+
+                # Fall back to full_name matching
+                if not researcher:
+                    name = summary.get("name") or summary.get("full_name") or summary.get("researcher_name") or ""
+                    if not name:
+                        first = (summary.get("first_name") or "").strip()
+                        last = (summary.get("last_name") or "").strip()
+                        if first or last:
+                            name = f"{first} {last}".strip()
                     if name:
                         stmt = select(Researcher).where(Researcher.full_name == name)
                         result = await session.execute(stmt)
                         researcher = result.scalar_one_or_none()
 
                 if researcher:
-                    raw_summary = summary.get("summary") or summary.get("text") or summary.get("content") or ""
-                    researcher.ai_summary = _strip_html(raw_summary)
-                    matched += 1
+                    # Extract summary text from nested ai_summaries structure
+                    raw_summary = ""
+                    ai_summaries = summary.get("ai_summaries")
+                    if isinstance(ai_summaries, dict):
+                        # Concatenate responses from all sections (main_themes, methods, etc.)
+                        parts = []
+                        for section_key in ("main_themes", "methods", "impacts", "collaborations"):
+                            section = ai_summaries.get(section_key)
+                            if isinstance(section, dict):
+                                resp = section.get("response", "")
+                                if resp:
+                                    parts.append(_strip_html(resp))
+                        raw_summary = "\n\n".join(p for p in parts if p)
+                    # Fall back to flat fields
+                    if not raw_summary:
+                        raw_summary = summary.get("summary") or summary.get("text") or summary.get("content") or ""
+                        raw_summary = _strip_html(raw_summary) or ""
+
+                    if raw_summary:
+                        researcher.ai_summary = raw_summary
+                        matched += 1
 
             except Exception as e:
                 logger.error(f"Error applying summary: {e}")

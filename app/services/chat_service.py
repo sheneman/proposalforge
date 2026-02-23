@@ -423,13 +423,17 @@ class ChatService:
 
         # Extract SQL from the response
         sql = self._extract_sql(assistant_text)
+        logger.info("Extracted SQL from LLM response: %s", sql[:120] if sql else "None")
 
         if not sql:
             # LLM didn't produce SQL — nudge it to generate a query
+            logger.info("No SQL found in response, nudging LLM to produce a query")
             sql = await self._nudge_for_sql(client, model, messages, assistant_text)
+            logger.info("Nudge result: %s", sql[:120] if sql else "None")
 
         if not sql:
             # Still no SQL - return the text response as-is
+            logger.warning("No SQL produced after nudge, returning text response")
             return {
                 "type": "text",
                 "content": assistant_text,
@@ -450,11 +454,15 @@ class ChatService:
 
         # Execute SQL
         try:
+            logger.info("Executing SQL: %s", sql[:200])
             result = await session.execute(text(sql))
             columns = list(result.keys())
             rows = result.fetchall()
+            logger.info("SQL executed successfully: %d rows", len(rows))
         except Exception as e:
             logger.warning(f"SQL execution failed: {e}")
+            # Roll back the failed statement so the session is usable
+            await session.rollback()
             # Try one refinement
             retry_result = await self._retry_with_error(client, model, messages, sql, str(e))
             if retry_result:

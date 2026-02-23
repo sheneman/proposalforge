@@ -15,17 +15,18 @@ _EXCLUDED_TABLES = {"site_settings", "alembic_version"}
 # System prompt rules (appended after dynamic schema)
 _RULES = """
 ## Rules
-1. ONLY generate SELECT statements. Never INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, or REVOKE.
-2. Always include LIMIT (max 200 rows) to prevent huge result sets.
-3. Use MariaDB/MySQL syntax (DATE_FORMAT, IFNULL, etc.).
-4. When joining opportunities to categories, use opportunity_funding_categories.
-5. For agency names, JOIN with the agencies table on o.agency_code = a.code.
-6. For funding instruments, JOIN with opportunity_funding_instruments on ofi.opportunity_id = o.id.
-7. For applicant types, JOIN with opportunity_applicant_types on oat.opportunity_id = o.id.
-8. Use 'posted' or 'forecasted' status for "open" or "active" opportunities.
-9. Format monetary values readably when appropriate.
-10. Always wrap your SQL in ```sql ... ``` code blocks.
-11. Give a brief natural language explanation before and/or after the SQL.
+1. ALWAYS generate an executable SQL query for every question. Do NOT just describe or suggest a query — actually write it out. Every response MUST contain a ```sql ... ``` code block with a runnable query. The query will be executed automatically.
+2. ONLY generate SELECT statements. Never INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, or REVOKE.
+3. Always include LIMIT (max 200 rows) to prevent huge result sets.
+4. Use MariaDB/MySQL syntax (DATE_FORMAT, IFNULL, etc.).
+5. When joining opportunities to categories, use opportunity_funding_categories.
+6. For agency names, JOIN with the agencies table on o.agency_code = a.code.
+7. For funding instruments, JOIN with opportunity_funding_instruments on ofi.opportunity_id = o.id.
+8. For applicant types, JOIN with opportunity_applicant_types on oat.opportunity_id = o.id.
+9. Use 'posted' or 'forecasted' status for "open" or "active" opportunities.
+10. Format monetary values readably when appropriate.
+11. Always wrap your SQL in ```sql ... ``` code blocks.
+12. Give a brief natural language explanation before the SQL.
 """
 
 # Few-shot examples appended to the system prompt
@@ -424,7 +425,11 @@ class ChatService:
         sql = self._extract_sql(assistant_text)
 
         if not sql:
-            # No SQL found - return the text response as-is
+            # LLM didn't produce SQL — nudge it to generate a query
+            sql = await self._nudge_for_sql(client, model, messages, assistant_text)
+
+        if not sql:
+            # Still no SQL - return the text response as-is
             return {
                 "type": "text",
                 "content": assistant_text,
@@ -483,7 +488,44 @@ class ChatService:
         if match:
             return match.group(1).strip().rstrip(";")
 
+        # Try bare SELECT without semicolon (greedy to end of line or paragraph)
+        match = re.search(r'(SELECT\b[^`]*?(?:LIMIT\s+\d+|$))', text_content, re.DOTALL | re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip()
+            # Only accept if it looks like a real query (has FROM)
+            if re.search(r'\bFROM\b', candidate, re.IGNORECASE):
+                return candidate
+
         return None
+
+    async def _nudge_for_sql(
+        self,
+        client,
+        model: str,
+        original_messages: list[dict],
+        assistant_text: str,
+    ) -> str | None:
+        """If the LLM described a query but didn't write SQL, ask it to produce one."""
+        nudge_messages = list(original_messages)
+        nudge_messages.append({"role": "assistant", "content": assistant_text})
+        nudge_messages.append({
+            "role": "user",
+            "content": (
+                "Please write the actual executable SQL query for this in a ```sql code block. "
+                "Do not just describe it — provide the full runnable SELECT statement."
+            ),
+        })
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=nudge_messages,
+                temperature=0.1,
+                max_tokens=1000,
+            )
+            retry_text = response.choices[0].message.content or ""
+            return self._extract_sql(retry_text)
+        except Exception:
+            return None
 
     async def _retry_with_error(
         self,

@@ -22,7 +22,11 @@
                         <label class="form-label fw-bold small">Search</label>
                         <input type="text" class="form-control form-control-sm" name="q"
                                value="{{ query }}" placeholder="Name, keywords, research..."
-                               hx-trigger="keyup changed delay:500ms">
+                               hx-get="/researchers"
+                               hx-target="#researcher-results"
+                               hx-include="#researcher-filters"
+                               hx-trigger="keyup changed delay:500ms"
+                               hx-indicator="#loading-indicator">
                     </div>
 
                     <!-- Status -->

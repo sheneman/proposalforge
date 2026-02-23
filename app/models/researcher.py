@@ -49,6 +49,11 @@ class Researcher(Base):
     __table_args__ = (
         Index("ix_researcher_status", "status"),
         Index("ix_researcher_position", "position_code"),
+        Index(
+            "ft_researcher_search",
+            "full_name", "keyword_text", "ai_summary", "position_title",
+            mysql_prefix="FULLTEXT",
+        ),
     )
 
 
@@ -119,6 +124,14 @@ class Publication(Base):
     )
 
     researcher_links = relationship("ResearcherPublication", back_populates="publication", cascade="all, delete-orphan", lazy="noload")
+
+    __table_args__ = (
+        Index(
+            "ft_publication_search",
+            "title", "abstract", "keywords",
+            mysql_prefix="FULLTEXT",
+        ),
+    )
 
 
 class ResearcherPublication(Base):

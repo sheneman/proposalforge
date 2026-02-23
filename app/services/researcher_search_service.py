@@ -33,15 +33,28 @@ class ResearcherSearchService:
         conditions = []
         params = {}
 
-        # Full-text search
+        # Full-text search (with LIKE fallback for short queries)
         if query and query.strip():
-            ft = text(
-                "MATCH(researchers.full_name, researchers.keyword_text, "
-                "researchers.ai_summary, researchers.position_title) "
-                "AGAINST(:query IN BOOLEAN MODE)"
-            )
-            conditions.append(ft)
-            params["query"] = query.strip()
+            q = query.strip()
+            # MariaDB ft_min_word_len default is 4; short terms need LIKE fallback
+            if len(q) < 4:
+                like_pattern = f"%{q}%"
+                conditions.append(text(
+                    "(researchers.full_name LIKE :like_q OR "
+                    "researchers.keyword_text LIKE :like_q OR "
+                    "researchers.position_title LIKE :like_q)"
+                ))
+                params["like_q"] = like_pattern
+            else:
+                # Add wildcard for prefix matching in boolean mode
+                ft_query = " ".join(f"+{word}*" for word in q.split() if word)
+                ft = text(
+                    "MATCH(researchers.full_name, researchers.keyword_text, "
+                    "researchers.ai_summary, researchers.position_title) "
+                    "AGAINST(:query IN BOOLEAN MODE)"
+                )
+                conditions.append(ft)
+                params["query"] = ft_query
 
         # Status filter
         if status:

@@ -440,7 +440,7 @@ class ChatService:
                 "sql": None,
             }
 
-        # Validate SQL
+        # Validate SQL (safety check)
         is_valid, error_msg = _validate_sql(sql)
         if not is_valid:
             return {
@@ -448,6 +448,15 @@ class ChatService:
                 "content": f"I generated a query but it was blocked for safety: {error_msg}",
                 "sql": sql,
             }
+
+        # LLM validation pass: verify schema + MariaDB syntax
+        validated_sql = await self._validate_sql_with_llm(client, model, session, sql)
+        if validated_sql:
+            # Re-check safety on the validated SQL
+            is_valid2, error_msg2 = _validate_sql(validated_sql)
+            if is_valid2:
+                sql = validated_sql
+                logger.info("SQL after validation pass: %s", sql[:200])
 
         # Ensure LIMIT
         sql = _ensure_limit(sql)
@@ -505,6 +514,49 @@ class ChatService:
                 return candidate
 
         return None
+
+    async def _validate_sql_with_llm(
+        self,
+        client,
+        model: str,
+        session: AsyncSession,
+        sql: str,
+    ) -> str | None:
+        """Second LLM pass: validate and fix SQL against the actual schema and MariaDB syntax."""
+        schema = await self._build_schema(session)
+        validate_prompt = (
+            f"{schema}\n\n"
+            "## Task\n"
+            "You are a MariaDB SQL validator. Review the SQL query below and fix any issues.\n\n"
+            "Check for:\n"
+            "- Column names and table names must exactly match the schema above\n"
+            "- JOIN conditions must use correct foreign key relationships from the schema\n"
+            "- MariaDB syntax only: no WITH ROLLUP combined with ORDER BY, no unsupported window functions\n"
+            "- FORMAT() returns a string — do not use it inside SUM/AVG/arithmetic; use it only for final display columns\n"
+            "- CONCAT() calls must have balanced quotes and correct argument counts\n"
+            "- All referenced tables and columns must exist in the schema\n"
+            "- Must be a SELECT statement with a LIMIT clause\n\n"
+            "If the query is correct, return it unchanged. If it has errors, return the fixed version.\n"
+            "Return ONLY the SQL query inside a ```sql code block. No explanation.\n\n"
+            f"```sql\n{sql}\n```"
+        )
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": validate_prompt}],
+                temperature=0.0,
+                max_tokens=1500,
+            )
+            result_text = response.choices[0].message.content or ""
+            validated = self._extract_sql(result_text)
+            if validated:
+                logger.info("Validation pass returned SQL: %s", validated[:120])
+            else:
+                logger.warning("Validation pass returned no SQL, keeping original")
+            return validated
+        except Exception as e:
+            logger.warning(f"SQL validation LLM call failed: {e}")
+            return None
 
     async def _nudge_for_sql(
         self,

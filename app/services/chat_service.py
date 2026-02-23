@@ -23,7 +23,7 @@ _RULES = """
 6. For agency names, JOIN with the agencies table on o.agency_code = a.code.
 7. For funding instruments, JOIN with opportunity_funding_instruments on ofi.opportunity_id = o.id.
 8. For applicant types, JOIN with opportunity_applicant_types on oat.opportunity_id = o.id.
-9. Use 'posted' or 'forecasted' status for "open" or "active" opportunities.
+9. The status column has values: 'posted', 'forecasted', 'closed', 'archived'. Query ALL statuses by default (do not filter by status unless the user specifically asks for open/active/closed/archived opportunities). If the user asks for "open" or "active" opportunities, use status IN ('posted', 'forecasted').
 10. Format monetary values readably when appropriate.
 11. Always wrap your SQL in ```sql ... ``` code blocks.
 12. Give a brief natural language explanation before the SQL.
@@ -36,6 +36,11 @@ FEW_SHOT_EXAMPLES = """
 Q: How many open opportunities are there?
 ```sql
 SELECT COUNT(*) AS open_count FROM opportunities WHERE status IN ('posted', 'forecasted') LIMIT 1
+```
+
+Q: How many total opportunities are in the database?
+```sql
+SELECT COUNT(*) AS total_count FROM opportunities LIMIT 1
 ```
 
 Q: Top 10 agencies by total funding

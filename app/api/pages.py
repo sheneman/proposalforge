@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, Request, Query
@@ -11,13 +12,25 @@ from app.models import Opportunity
 from app.services.search_service import search_service
 from app.services.sync_service import sync_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
-    stats = await search_service.get_stats(db)
+    try:
+        stats = await search_service.get_stats(db)
+    except Exception:
+        logger.exception("Failed to load dashboard stats")
+        stats = {
+            "total_open": 0, "closing_this_week": 0,
+            "closing_this_month": 0, "new_this_week": 0,
+            "top_agencies": [], "top_categories": [],
+            "closed": {"total": 0, "total_funding": 0, "avg_ceiling": 0, "top_agencies": []},
+            "archived": {"total": 0, "total_funding": 0, "avg_ceiling": 0, "top_agencies": []},
+        }
     return templates.TemplateResponse("index.html", {
         "request": request,
         "stats": stats,

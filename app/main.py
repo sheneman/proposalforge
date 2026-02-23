@@ -2,7 +2,8 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -66,6 +67,23 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Global exception handler — return a friendly page instead of bare 500
+@app.exception_handler(500)
+async def internal_error_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
+    return HTMLResponse(
+        content=(
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            "<title>ProposalForge</title>"
+            '<meta http-equiv="refresh" content="3">'
+            "</head><body style=\"font-family:system-ui;text-align:center;padding:60px\">"
+            "<h2>Something went wrong</h2>"
+            "<p>The page will automatically retry in a few seconds&hellip;</p>"
+            "</body></html>"
+        ),
+        status_code=500,
+    )
 
 # Session middleware for admin auth
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)

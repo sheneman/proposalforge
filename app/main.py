@@ -68,19 +68,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Global exception handler — return a friendly page instead of bare 500
+# Global exception handler — silent single retry, then show error
 @app.exception_handler(500)
 async def internal_error_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
+    # Only auto-retry once to avoid infinite reload loops
+    if request.query_params.get("_retry"):
+        return HTMLResponse(
+            content=(
+                '<!DOCTYPE html><html><head><meta charset="utf-8">'
+                "<title>ProposalForge</title>"
+                "</head><body style=\"font-family:system-ui;text-align:center;padding:60px\">"
+                "<h2>Something went wrong</h2>"
+                "<p>Please try refreshing the page.</p>"
+                "</body></html>"
+            ),
+            status_code=500,
+        )
+    # Build retry URL with _retry param
+    retry_url = str(request.url)
+    retry_url += "&_retry=1" if "?" in retry_url else "?_retry=1"
     return HTMLResponse(
         content=(
             '<!DOCTYPE html><html><head><meta charset="utf-8">'
-            "<title>ProposalForge</title>"
-            '<meta http-equiv="refresh" content="3">'
-            "</head><body style=\"font-family:system-ui;text-align:center;padding:60px\">"
-            "<h2>Something went wrong</h2>"
-            "<p>The page will automatically retry in a few seconds&hellip;</p>"
-            "</body></html>"
+            f'<script>window.location.replace("{retry_url}");</script>'
+            "</head><body></body></html>"
         ),
         status_code=500,
     )

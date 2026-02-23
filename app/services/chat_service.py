@@ -600,8 +600,10 @@ class ChatService:
         if fmt == "empty":
             clean_text = re.sub(r'```sql.*?```', '', assistant_text, flags=re.DOTALL).strip()
             return {
-                "type": "text",
-                "content": clean_text or "The query returned no results.",
+                "type": "summary",
+                "content": clean_text or "No matching records found in the database.",
+                "value": "0 results",
+                "label": "Query executed successfully",
                 "sql": sql,
             }
 

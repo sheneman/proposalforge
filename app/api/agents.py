@@ -1,14 +1,16 @@
+import asyncio
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.services.agent_service import agent_service
+from app.services.cache_service import cache_service
 from app.services.mcp_manager import mcp_manager
 from app.services.workflow_service import workflow_service
 
@@ -172,6 +174,66 @@ async def get_run_progress(run_id: int):
     if progress:
         return progress
     return {"status": "unknown", "phase": "unknown"}
+
+
+# ─── SSE Log Streaming ────────────────────────────────
+
+@router.get("/api/workflows/runs/{run_id}/logs/stream")
+async def stream_run_logs(run_id: int):
+    """SSE endpoint streaming live workflow log events from Redis."""
+
+    async def event_generator():
+        r = cache_service._redis
+        if not r:
+            yield "data: {\"type\": \"error\", \"message\": \"Redis not available\"}\n\n"
+            return
+
+        list_key = f"pf:workflow:{run_id}:log"
+        notify_channel = f"pf:workflow:{run_id}:notify"
+        cursor = 0
+        pubsub = r.pubsub()
+        await pubsub.subscribe(notify_channel)
+
+        try:
+            timeout_at = asyncio.get_event_loop().time() + 900  # 15 min max
+            while asyncio.get_event_loop().time() < timeout_at:
+                # Read any new entries from the list
+                entries = await r.lrange(list_key, cursor, -1)
+                if entries:
+                    for entry in entries:
+                        yield f"data: {entry}\n\n"
+                        # Check for terminal events
+                        try:
+                            evt = json.loads(entry)
+                            if evt.get("type") in ("workflow_end", "cancel"):
+                                return
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    cursor += len(entries)
+
+                # Wait for pub/sub notification or send keepalive after timeout
+                got_notify = False
+                for _ in range(15):  # ~15 seconds max before keepalive
+                    msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if msg and msg["type"] == "message":
+                        got_notify = True
+                        break
+                if not got_notify:
+                    yield ":\n\n"
+
+        finally:
+            await pubsub.unsubscribe(notify_channel)
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ─── Agent CRUD (parameterized — must come after static paths) ───

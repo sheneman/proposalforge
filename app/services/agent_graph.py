@@ -10,7 +10,7 @@ Graph flow:
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
@@ -19,9 +19,49 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.database import async_session
 from app.models.agent import WorkflowStep, AgentMatch
 from app.services.agent_service import agent_service
+from app.services.cache_service import cache_service
 from app.services.mcp_manager import mcp_manager
 
 logger = logging.getLogger(__name__)
+
+
+class WorkflowCancelledError(Exception):
+    """Raised when a workflow is cancelled via Redis flag."""
+    pass
+
+
+async def _emit_log(run_id: int, event_dict: dict):
+    """Push a log event to Redis list and notify via pub/sub."""
+    try:
+        r = cache_service._redis
+        if not r:
+            return
+        event_dict.setdefault("ts", datetime.now(timezone.utc).isoformat())
+        payload = json.dumps(event_dict, default=str)
+        list_key = f"pf:workflow:{run_id}:log"
+        await r.rpush(list_key, payload)
+        await r.expire(list_key, 3600)
+        await r.publish(f"pf:workflow:{run_id}:notify", payload)
+    except Exception:
+        logger.debug("Failed to emit log event", exc_info=True)
+
+
+async def _is_cancelled(run_id: int) -> bool:
+    """Check Redis cancel flag."""
+    try:
+        r = cache_service._redis
+        if not r:
+            return False
+        return bool(await r.exists(f"pf:workflow:{run_id}:cancel"))
+    except Exception:
+        return False
+
+
+async def _check_cancel(run_id: int):
+    """Check cancel and raise if set."""
+    if await _is_cancelled(run_id):
+        await _emit_log(run_id, {"type": "cancel", "message": "Workflow cancelled by user"})
+        raise WorkflowCancelledError("Workflow cancelled")
 
 
 class MatchmakingState(TypedDict):
@@ -78,6 +118,9 @@ async def _invoke_agent(agent_slug: str, user_message: str, run_id: int, node_na
     model_used = None
     token_count = None
 
+    # Check cancel before LLM call
+    await _check_cancel(run_id)
+
     try:
         async with async_session() as session:
             llm = await agent_service.build_llm_client(session, agent_slug)
@@ -89,6 +132,15 @@ async def _invoke_agent(agent_slug: str, user_message: str, run_id: int, node_na
             messages.append(SystemMessage(content=system_prompt))
         messages.append(HumanMessage(content=user_message))
 
+        # Emit llm_request event
+        await _emit_log(run_id, {
+            "type": "llm_request",
+            "node": node_name,
+            "agent": agent_slug,
+            "message": f"Calling {agent_slug} ({model_used})",
+            "detail": {"prompt_preview": user_message[:500], "model": model_used},
+        })
+
         response = await llm.ainvoke(messages)
         duration_ms = int((time.time() - start) * 1000)
 
@@ -96,6 +148,17 @@ async def _invoke_agent(agent_slug: str, user_message: str, run_id: int, node_na
         if hasattr(response, "response_metadata"):
             usage = response.response_metadata.get("token_usage", {})
             token_count = usage.get("total_tokens")
+
+        # Emit llm_response event
+        await _emit_log(run_id, {
+            "type": "llm_response",
+            "node": node_name,
+            "agent": agent_slug,
+            "message": f"{agent_slug} responded ({duration_ms}ms, {token_count or '?'} tokens)",
+            "detail": {"response_preview": response.content[:500]},
+            "duration_ms": duration_ms,
+            "tokens": token_count,
+        })
 
         await _log_step(
             run_id=run_id, agent_slug=agent_slug, node_name=node_name,
@@ -108,8 +171,16 @@ async def _invoke_agent(agent_slug: str, user_message: str, run_id: int, node_na
 
         return response.content
 
+    except WorkflowCancelledError:
+        raise
     except Exception as e:
         duration_ms = int((time.time() - start) * 1000)
+        await _emit_log(run_id, {
+            "type": "error",
+            "node": node_name,
+            "agent": agent_slug,
+            "message": f"Error in {agent_slug}: {str(e)[:200]}",
+        })
         await _log_step(
             run_id=run_id, agent_slug=agent_slug, node_name=node_name,
             sequence=sequence, status="failed",
@@ -147,6 +218,8 @@ def _safe_json_parse(text: str) -> dict | list | None:
 async def plan_node(state: MatchmakingState) -> dict:
     """Planning agent: assess data state, decide strategy."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "plan", "message": "Starting planning phase"})
+    await _check_cancel(run_id)
 
     # Gather data stats
     async with async_session() as session:
@@ -187,12 +260,15 @@ Create a matching plan. Respond with JSON only."""
         "batch_size": 10,
     }
 
+    await _emit_log(run_id, {"type": "node_end", "node": "plan", "message": "Planning complete"})
     return {"plan": plan, "status": "planning_complete"}
 
 
 async def discover_node(state: MatchmakingState) -> dict:
     """Discovery agent: enrich researcher and opportunity profiles."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "discover", "message": "Starting discovery phase"})
+    await _check_cancel(run_id)
     plan = state.get("plan", {})
     researcher_ids = state.get("researcher_ids", [])
     opportunity_ids = state.get("opportunity_ids", [])
@@ -291,6 +367,10 @@ Respond with a JSON array of enriched profiles with expanded keywords and themes
             input_data={"reason": f"Batch too large ({len(researcher_profiles)} researchers), skipping LLM enrichment"},
         )
 
+    await _emit_log(run_id, {
+        "type": "node_end", "node": "discover",
+        "message": f"Discovery complete: {len(researcher_profiles)} researchers, {len(opportunity_profiles)} opportunities",
+    })
     return {
         "researcher_profiles": researcher_profiles,
         "opportunity_profiles": opportunity_profiles,
@@ -301,6 +381,8 @@ Respond with a JSON array of enriched profiles with expanded keywords and themes
 async def pre_filter_node(state: MatchmakingState) -> dict:
     """Pure Python node: TF-IDF pre-filter to narrow candidates."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "pre_filter", "message": "Starting TF-IDF pre-filtering"})
+    await _check_cancel(run_id)
     start = time.time()
 
     researcher_profiles = state.get("researcher_profiles", [])
@@ -382,6 +464,11 @@ async def pre_filter_node(state: MatchmakingState) -> dict:
             duration_ms=duration_ms,
         )
 
+        await _emit_log(run_id, {
+            "type": "node_end", "node": "pre_filter",
+            "message": f"Pre-filter complete: {len(candidate_pairs)} candidate pairs",
+            "duration_ms": duration_ms,
+        })
         return {"candidate_pairs": candidate_pairs, "status": "pre_filter_complete"}
 
     except ImportError:
@@ -407,6 +494,8 @@ async def pre_filter_node(state: MatchmakingState) -> dict:
 async def match_node(state: MatchmakingState) -> dict:
     """Matchmaking agent: evaluate candidate pairs with structured scoring."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "match", "message": "Starting match evaluation"})
+    await _check_cancel(run_id)
     candidate_pairs = state.get("candidate_pairs", [])
     researcher_profiles = state.get("researcher_profiles", [])
     opportunity_profiles = state.get("opportunity_profiles", [])
@@ -423,7 +512,14 @@ async def match_node(state: MatchmakingState) -> dict:
     batch_size = 10
     all_matches = []
 
+    total_batches = (len(candidate_pairs) + batch_size - 1) // batch_size
     for i in range(0, len(candidate_pairs), batch_size):
+        batch_num = i // batch_size + 1
+        await _check_cancel(run_id)
+        await _emit_log(run_id, {
+            "type": "info", "node": "match", "agent": "matchmaker",
+            "message": f"Match batch {batch_num}/{total_batches} ({len(candidate_pairs[i:i+batch_size])} pairs)",
+        })
         batch = candidate_pairs[i:i + batch_size]
 
         pairs_desc = []
@@ -480,6 +576,10 @@ Respond with a JSON array of match objects."""
             "justification": m.get("justification", ""),
         })
 
+    await _emit_log(run_id, {
+        "type": "node_end", "node": "match",
+        "message": f"Match complete: {len(raw_matches)} matches (iteration {iteration + 1})",
+    })
     return {
         "raw_matches": raw_matches,
         "iteration": iteration + 1,
@@ -490,6 +590,8 @@ Respond with a JSON array of match objects."""
 async def critique_node(state: MatchmakingState) -> dict:
     """Critic agent: review and challenge match quality."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "critique", "message": "Starting critique phase"})
+    await _check_cancel(run_id)
     raw_matches = state.get("raw_matches", [])
 
     if not raw_matches:
@@ -499,7 +601,14 @@ async def critique_node(state: MatchmakingState) -> dict:
     batch_size = 15
     all_critiqued = []
 
+    total_batches = (len(raw_matches) + batch_size - 1) // batch_size
     for i in range(0, len(raw_matches), batch_size):
+        batch_num = i // batch_size + 1
+        await _check_cancel(run_id)
+        await _emit_log(run_id, {
+            "type": "info", "node": "critique", "agent": "critic",
+            "message": f"Critique batch {batch_num}/{total_batches} ({len(raw_matches[i:i+batch_size])} matches)",
+        })
         batch = raw_matches[i:i + batch_size]
 
         prompt = f"""Review these {len(batch)} matches for quality, score calibration, and justification strength.
@@ -550,6 +659,11 @@ Respond with a JSON array of reviewed matches."""
             "revision_needed": critique.get("revision_needed", False),
         })
 
+    flagged_count = sum(1 for m in critiqued_matches if m.get("flagged") or m.get("revision_needed"))
+    await _emit_log(run_id, {
+        "type": "node_end", "node": "critique",
+        "message": f"Critique complete: {len(critiqued_matches)} reviewed, {flagged_count} flagged",
+    })
     return {"critiqued_matches": critiqued_matches, "status": "critique_complete"}
 
 
@@ -578,6 +692,8 @@ def should_revise(state: MatchmakingState) -> str:
 async def summarize_node(state: MatchmakingState) -> dict:
     """Summarizer agent: create human-readable summaries."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "summarize", "message": "Starting summarization phase"})
+    await _check_cancel(run_id)
     critiqued_matches = state.get("critiqued_matches", [])
 
     if not critiqued_matches:
@@ -593,7 +709,14 @@ async def summarize_node(state: MatchmakingState) -> dict:
     batch_size = 20
     summaries_map = {}
 
+    total_batches = (len(worthy_matches) + batch_size - 1) // batch_size
     for i in range(0, len(worthy_matches), batch_size):
+        batch_num = i // batch_size + 1
+        await _check_cancel(run_id)
+        await _emit_log(run_id, {
+            "type": "info", "node": "summarize", "agent": "summarizer",
+            "message": f"Summary batch {batch_num}/{total_batches} ({len(worthy_matches[i:i+batch_size])} matches)",
+        })
         batch = worthy_matches[i:i + batch_size]
 
         prompt = f"""Create concise 2-3 sentence summaries for these {len(batch)} researcher-opportunity matches.
@@ -625,12 +748,17 @@ Respond with a JSON array: [{{"researcher_id": X, "opportunity_id": Y, "summary"
             "summary": summaries_map.get(key, ""),
         })
 
+    await _emit_log(run_id, {
+        "type": "node_end", "node": "summarize",
+        "message": f"Summarization complete: {len(summaries_map)} summaries generated",
+    })
     return {"final_matches": final_matches, "status": "summarize_complete"}
 
 
 async def persist_node(state: MatchmakingState) -> dict:
     """Pure Python node: write results to database."""
     run_id = state["run_id"]
+    await _emit_log(run_id, {"type": "node_start", "node": "persist", "message": "Persisting results to database"})
     final_matches = state.get("final_matches", [])
     start = time.time()
 
@@ -678,6 +806,11 @@ async def persist_node(state: MatchmakingState) -> dict:
         duration_ms=duration_ms,
     )
 
+    await _emit_log(run_id, {
+        "type": "node_end", "node": "persist",
+        "message": f"Persisted {inserted} matches to database",
+        "duration_ms": duration_ms,
+    })
     return {"status": "completed"}
 
 

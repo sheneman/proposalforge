@@ -1,7 +1,8 @@
 // ─── Agents Page JavaScript ──────────────────────────
 
 let activeRunId = null;
-let progressInterval = null;
+let eventSource = null;
+let logVisible = false;
 
 // ─── Agent Configuration ─────────────────────────────
 
@@ -153,7 +154,7 @@ async function startMatchmaking() {
         if (result.success) {
             activeRunId = result.run_id;
             showProgressPanel();
-            startProgressPolling();
+            startLogStream();
         } else {
             alert(result.error || 'Failed to start workflow');
             btn.disabled = false;
@@ -169,6 +170,9 @@ async function startMatchmaking() {
 function showProgressPanel() {
     const card = document.getElementById('live-progress-card');
     if (card) card.style.display = 'block';
+    // Clear previous log entries
+    const logContainer = document.getElementById('log-container');
+    if (logContainer) logContainer.innerHTML = '';
 }
 
 function hideProgressPanel() {
@@ -176,73 +180,222 @@ function hideProgressPanel() {
     if (card) card.style.display = 'none';
 }
 
-function startProgressPolling() {
-    if (progressInterval) clearInterval(progressInterval);
-    progressInterval = setInterval(pollProgress, 2500);
-}
+// ─── SSE Log Streaming ──────────────────────────────
 
-async function pollProgress() {
-    if (!activeRunId) {
-        stopProgressPolling();
-        return;
-    }
+function startLogStream() {
+    stopLogStream();
+    if (!activeRunId) return;
 
-    try {
-        const resp = await fetch(`/agents/api/workflows/runs/${activeRunId}/progress`);
-        const data = await resp.json();
+    eventSource = new EventSource(`/agents/api/workflows/runs/${activeRunId}/logs/stream`);
 
-        const phaseEl = document.getElementById('progress-phase');
-        const detailsEl = document.getElementById('progress-details');
-        const barEl = document.getElementById('progress-bar');
+    eventSource.onmessage = function(e) {
+        try {
+            const event = JSON.parse(e.data);
+            appendLogEntry(event);
+            updateProgressFromEvent(event);
 
-        if (phaseEl) phaseEl.textContent = data.phase || 'Working...';
-        if (detailsEl) {
-            let details = `Status: ${data.status}`;
-            if (data.matches_produced !== undefined) details += ` | Matches: ${data.matches_produced}`;
-            detailsEl.textContent = details;
-        }
-
-        // Estimate progress based on phase
-        const phaseProgress = {
-            'initializing': 5, 'planning': 15, 'planning_complete': 20,
-            'discovery_complete': 35, 'pre_filter_complete': 50,
-            'match_complete': 70, 'critique_complete': 80,
-            'summarize_complete': 90, 'done': 100,
-        };
-        const pct = phaseProgress[data.phase] || phaseProgress[data.status] || 50;
-        if (barEl) barEl.style.width = pct + '%';
-
-        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
-            stopProgressPolling();
-            hideProgressPanel();
-            const btn = document.getElementById('btn-start-matching');
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-play-fill"></i> Run Matchmaking';
+            if (event.type === 'workflow_end' || event.type === 'cancel') {
+                onWorkflowFinished(event);
             }
-            refreshRuns();
+        } catch (err) {
+            console.error('SSE parse error:', err);
         }
-    } catch (e) {
-        console.error('Progress poll error:', e);
+    };
+
+    eventSource.onerror = function() {
+        // SSE connection lost — check if workflow ended
+        setTimeout(() => {
+            if (activeRunId) {
+                fetch(`/agents/api/workflows/runs/${activeRunId}/progress`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+                            onWorkflowFinished(data);
+                        }
+                    })
+                    .catch(() => {});
+            }
+        }, 2000);
+    };
+}
+
+function stopLogStream() {
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
     }
 }
 
-function stopProgressPolling() {
-    if (progressInterval) {
-        clearInterval(progressInterval);
-        progressInterval = null;
+// ─── Log Rendering ──────────────────────────────────
+
+const LOG_COLORS = {
+    node_start: '#56b6c2',    // cyan
+    node_end: '#56b6c2',
+    llm_request: '#e5c07b',   // orange/gold
+    llm_response: '#98c379',  // green
+    info: '#abb2bf',          // light gray
+    error: '#e06c75',         // red
+    cancel: '#e06c75',
+    workflow_start: '#c678dd', // purple
+    workflow_end: '#c678dd',
+};
+
+function appendLogEntry(event) {
+    const container = document.getElementById('log-container');
+    if (!container) return;
+
+    const color = LOG_COLORS[event.type] || '#abb2bf';
+    const ts = event.ts ? new Date(event.ts).toLocaleTimeString() : '';
+    const agent = event.agent ? `[${event.agent}]` : '';
+    const node = event.node ? `<${event.node}>` : '';
+
+    let line = document.createElement('div');
+    line.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+    line.style.padding = '2px 0';
+
+    let html = `<span style="color:#636d83">${ts}</span> `;
+    html += `<span style="color:${color};font-weight:600">${event.type}</span> `;
+    if (node) html += `<span style="color:#61afef">${node}</span> `;
+    if (agent) html += `<span style="color:#d19a66">${agent}</span> `;
+    html += `<span style="color:#e0e0e0">${escapeHtml(event.message || '')}</span>`;
+
+    // Duration and tokens inline
+    if (event.duration_ms) html += ` <span style="color:#636d83">${event.duration_ms}ms</span>`;
+    if (event.tokens) html += ` <span style="color:#636d83">${event.tokens}tok</span>`;
+
+    // Expandable detail
+    if (event.detail) {
+        const detailId = 'detail-' + Math.random().toString(36).substr(2, 9);
+        html += ` <a href="#" style="color:#61afef;text-decoration:none;font-size:0.7rem" onclick="event.preventDefault();document.getElementById('${detailId}').style.display=document.getElementById('${detailId}').style.display==='none'?'block':'none'">[detail]</a>`;
+        html += `<div id="${detailId}" style="display:none;margin:4px 0 4px 20px;padding:6px 8px;background:rgba(255,255,255,0.05);border-radius:4px;white-space:pre-wrap;word-break:break-all;color:#98c379;font-size:0.72rem;max-height:200px;overflow-y:auto">`;
+        if (event.detail.prompt_preview) html += `<strong style="color:#e5c07b">Prompt:</strong>\n${escapeHtml(event.detail.prompt_preview)}\n\n`;
+        if (event.detail.response_preview) html += `<strong style="color:#98c379">Response:</strong>\n${escapeHtml(event.detail.response_preview)}`;
+        if (event.detail.model) html += `\n<strong style="color:#abb2bf">Model:</strong> ${escapeHtml(event.detail.model)}`;
+        html += '</div>';
+    }
+
+    line.innerHTML = html;
+    container.appendChild(line);
+
+    // Auto-scroll to bottom
+    container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ─── Progress Updates from SSE Events ────────────────
+
+const NODE_PROGRESS = {
+    'plan': 10, 'discover': 25, 'pre_filter': 40,
+    'match': 60, 'critique': 75, 'summarize': 88, 'persist': 95,
+};
+
+function updateProgressFromEvent(event) {
+    const phaseEl = document.getElementById('progress-phase');
+    const barEl = document.getElementById('progress-bar');
+    const detailsEl = document.getElementById('progress-details');
+
+    if (event.type === 'node_start' && event.node) {
+        if (phaseEl) phaseEl.textContent = `Running: ${event.node}`;
+        const pct = NODE_PROGRESS[event.node] || 50;
+        if (barEl) barEl.style.width = pct + '%';
+    } else if (event.type === 'node_end' && event.node) {
+        if (phaseEl) phaseEl.textContent = `Completed: ${event.node}`;
+    } else if (event.type === 'info') {
+        if (detailsEl) detailsEl.textContent = event.message || '';
+    } else if (event.type === 'workflow_end') {
+        if (phaseEl) phaseEl.textContent = event.message || 'Done';
+        if (barEl) barEl.style.width = '100%';
+    } else if (event.type === 'cancel') {
+        if (phaseEl) phaseEl.textContent = 'Cancelled';
     }
 }
+
+function onWorkflowFinished(event) {
+    stopLogStream();
+
+    // Hide spinner in header
+    const spinner = document.getElementById('progress-spinner');
+    if (spinner) spinner.style.display = 'none';
+
+    // Update the progress bar to 100%
+    const barEl = document.getElementById('progress-bar');
+    if (barEl) {
+        barEl.style.width = '100%';
+        if (event.type === 'cancel' || event.status === 'cancelled') {
+            barEl.className = 'progress-bar bg-warning';
+        } else if (event.status === 'failed') {
+            barEl.className = 'progress-bar bg-danger';
+        } else {
+            barEl.className = 'progress-bar bg-success';
+        }
+    }
+
+    // Re-enable start button
+    const btn = document.getElementById('btn-start-matching');
+    if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Run Matchmaking';
+    }
+
+    // Hide cancel button
+    const cancelBtn = document.getElementById('btn-cancel');
+    if (cancelBtn) cancelBtn.style.display = 'none';
+
+    // Refresh the runs table
+    refreshRuns();
+
+    // Hide progress panel after a delay (so user can read final logs)
+    setTimeout(() => {
+        hideProgressPanel();
+        // Reset bar
+        if (barEl) barEl.className = 'progress-bar bg-navy';
+        if (spinner) spinner.style.display = '';
+        if (cancelBtn) cancelBtn.style.display = '';
+        activeRunId = null;
+    }, 5000);
+}
+
+// ─── Cancel ─────────────────────────────────────────
 
 async function cancelRun() {
     if (!activeRunId) return;
     if (!confirm('Cancel the running workflow?')) return;
+
+    const cancelBtn = document.getElementById('btn-cancel');
+    if (cancelBtn) {
+        cancelBtn.disabled = true;
+        cancelBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Cancelling...';
+    }
 
     try {
         await fetch(`/agents/api/workflows/${activeRunId}/cancel`, {method: 'POST'});
     } catch (e) {
         console.error('Cancel error:', e);
     }
+}
+
+// ─── Log Toggle ─────────────────────────────────────
+
+function toggleLogDetail() {
+    const container = document.getElementById('log-container');
+    const btn = document.getElementById('btn-toggle-log');
+    if (!container) return;
+
+    logVisible = !logVisible;
+    container.style.display = logVisible ? 'block' : 'none';
+    if (btn) {
+        btn.innerHTML = logVisible
+            ? '<i class="bi bi-terminal-fill"></i> Hide Logs'
+            : '<i class="bi bi-terminal"></i> Logs';
+    }
+
+    // Scroll to bottom when showing
+    if (logVisible) container.scrollTop = container.scrollHeight;
 }
 
 // ─── Workflow Runs ───────────────────────────────────
@@ -361,8 +514,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (running) {
                 activeRunId = running.id;
                 showProgressPanel();
-                startProgressPolling();
+                startLogStream();
             }
         }).catch(() => {});
     }
+});
+
+// Clean up SSE on page unload
+window.addEventListener('beforeunload', () => {
+    stopLogStream();
 });

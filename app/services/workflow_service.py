@@ -178,6 +178,10 @@ class WorkflowService:
         opportunity_ids: list[int] | None,
     ):
         """Execute the matchmaking LangGraph workflow."""
+        from app.services.agent_graph import (
+            build_matchmaking_graph, WorkflowCancelledError, _emit_log, _is_cancelled,
+        )
+
         try:
             # Update run status
             async with async_session() as session:
@@ -193,9 +197,12 @@ class WorkflowService:
                 "started_at": datetime.utcnow().isoformat(),
             })
 
-            # Build and compile the graph
-            from app.services.agent_graph import build_matchmaking_graph
+            await _emit_log(run_id, {
+                "type": "workflow_start",
+                "message": "Matchmaking workflow started",
+            })
 
+            # Build and compile the graph
             graph = build_matchmaking_graph()
             compiled = graph.compile()
 
@@ -218,14 +225,25 @@ class WorkflowService:
                 "status": "starting",
             }
 
-            # Execute the graph
-            final_state = await compiled.ainvoke(initial_state)
+            # Execute the graph with astream for per-node progress
+            final_state = dict(initial_state)
+            async for event in compiled.astream(initial_state):
+                for node_name, node_output in event.items():
+                    if isinstance(node_output, dict):
+                        final_state.update(node_output)
+                    # Publish progress after each node
+                    phase = node_output.get("status", node_name) if isinstance(node_output, dict) else node_name
+                    await self._publish_progress(run_id, {
+                        "status": "running",
+                        "phase": phase,
+                    })
+                # Check cancellation between nodes
+                if await _is_cancelled(run_id):
+                    raise WorkflowCancelledError("Workflow cancelled between nodes")
 
-            # Check for cancellation
-            if self._cancel_requested.get(run_id):
+            # Determine final status
+            if self._cancel_requested.get(run_id) or await _is_cancelled(run_id):
                 status = "cancelled"
-            elif final_state.get("status") == "completed":
-                status = "completed"
             elif final_state.get("errors"):
                 status = "failed"
             else:
@@ -259,7 +277,34 @@ class WorkflowService:
                 "matches_produced": len(final_state.get("final_matches", [])),
             })
 
+            await _emit_log(run_id, {
+                "type": "workflow_end",
+                "message": f"Workflow {status}: {len(final_state.get('final_matches', []))} matches produced",
+            })
+
             logger.info("Workflow run %d completed with status: %s", run_id, status)
+
+        except (WorkflowCancelledError, asyncio.CancelledError):
+            logger.info("Workflow run %d cancelled", run_id)
+            try:
+                async with async_session() as session:
+                    run = await self.get_run(session, run_id)
+                    if run and run.status not in ("cancelled",):
+                        run.status = "cancelled"
+                        run.completed_at = datetime.utcnow()
+                        await session.commit()
+
+                await self._publish_progress(run_id, {
+                    "status": "cancelled",
+                    "phase": "done",
+                })
+
+                await _emit_log(run_id, {
+                    "type": "workflow_end",
+                    "message": "Workflow cancelled",
+                })
+            except Exception:
+                logger.exception("Failed to update run status after cancel")
 
         except Exception as e:
             logger.exception("Workflow run %d failed", run_id)
@@ -277,6 +322,11 @@ class WorkflowService:
                     "phase": "error",
                     "error": str(e)[:200],
                 })
+
+                await _emit_log(run_id, {
+                    "type": "workflow_end",
+                    "message": f"Workflow failed: {str(e)[:200]}",
+                })
             except Exception:
                 logger.exception("Failed to update run status after error")
 
@@ -288,22 +338,37 @@ class WorkflowService:
     # ─── Cancel Workflow ──────────────────────────────
 
     async def cancel_run(self, run_id: int) -> bool:
-        """Request cancellation of a running workflow."""
+        """Request cancellation of a running workflow via Redis flag."""
         task = self._running_tasks.get(run_id)
         if task and not task.done():
             self._cancel_requested[run_id] = True
-            task.cancel()
 
+            # Set Redis cancel flag — checked between nodes and batches
             try:
-                async with async_session() as session:
-                    run = await self.get_run(session, run_id)
-                    if run and run.status == "running":
-                        run.status = "cancelled"
-                        run.completed_at = datetime.utcnow()
-                        await session.commit()
+                r = cache_service._redis
+                if r:
+                    await r.set(f"pf:workflow:{run_id}:cancel", "1", ex=600)
             except Exception:
                 pass
 
+            # Emit cancel log event
+            try:
+                from app.services.agent_graph import _emit_log
+                await _emit_log(run_id, {
+                    "type": "cancel",
+                    "message": "Cancel requested — stopping after current operation",
+                })
+            except Exception:
+                pass
+
+            # Publish cancelling progress
+            await self._publish_progress(run_id, {
+                "status": "cancelling",
+                "phase": "cancelling",
+            })
+
+            # Keep task.cancel() as backup
+            task.cancel()
             return True
         return False
 

@@ -85,6 +85,32 @@ async function resetAgent(slug) {
     }
 }
 
+// ─── MCP Server Toggle ──────────────────────────────
+
+async function toggleMCPServer(slug, enabled) {
+    const label = document.querySelector(`label[for="mcp-enabled-${slug}"]`);
+    try {
+        const resp = await fetch(`/agents/api/mcp-servers/${slug}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        });
+        if (resp.ok) {
+            if (label) label.textContent = enabled ? 'Enabled' : 'Disabled';
+        } else {
+            // Revert toggle on failure
+            const checkbox = document.getElementById(`mcp-enabled-${slug}`);
+            if (checkbox) checkbox.checked = !enabled;
+            if (label) label.textContent = !enabled ? 'Enabled' : 'Disabled';
+            alert('Failed to update server: ' + (await resp.text()));
+        }
+    } catch (e) {
+        const checkbox = document.getElementById(`mcp-enabled-${slug}`);
+        if (checkbox) checkbox.checked = !enabled;
+        alert('Error: ' + e.message);
+    }
+}
+
 // ─── MCP Server Testing ─────────────────────────────
 
 async function testMCPServer(slug) {

@@ -144,9 +144,13 @@ class MCPManager:
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            # Auto-inject DB credentials for the sql server
+            # Auto-inject credentials from app config
             if slug == "sql":
                 env_vars = self._inject_db_env(env_vars)
+            elif slug == "web_search":
+                from app.config import settings
+                if settings.BRAVE_API_KEY and "BRAVE_API_KEY" not in env_vars:
+                    env_vars["BRAVE_API_KEY"] = settings.BRAVE_API_KEY
 
             args = []
             if server.args:

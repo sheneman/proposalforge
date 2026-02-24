@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     COLLABNET_API_KEY: str = ""
     RESEARCHER_SYNC_ON_STARTUP: bool = False
 
+    # Brave Search API (for MCP web search)
+    BRAVE_API_KEY: str = ""
+
     # VERSO/Esploro API (grants, projects, activities)
     VERSO_API_URL: str = "https://api-na.hosted.exlibrisgroup.com/esploro/v1"
     VERSO_API_KEY: str = ""

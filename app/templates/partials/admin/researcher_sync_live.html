@@ -108,21 +108,15 @@
 {% endif %}
 
 {% if is_admin %}
-<div class="d-flex gap-2 flex-wrap">
+<div class="d-flex gap-2 flex-wrap mb-2">
     <button class="btn btn-primary btn-sm"
             hx-post="/admin/researcher-sync/trigger"
             hx-target="#researcher-sync-live"
             hx-swap="innerHTML">
         <i class="bi bi-arrow-repeat"></i> Sync Researchers
     </button>
-    <button class="btn btn-outline-primary btn-sm"
-            hx-post="/admin/matches/recompute"
-            hx-target="#match-recompute-status"
-            hx-swap="innerHTML">
-        <i class="bi bi-diagram-3"></i> Recompute Matches
-    </button>
 </div>
-<div id="match-recompute-status" class="mt-2"
+<div id="match-recompute-status"
      hx-get="/admin/matches/status"
      hx-trigger="load"
      hx-swap="innerHTML">

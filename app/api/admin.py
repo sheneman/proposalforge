@@ -270,9 +270,9 @@ async def cancel_researcher_sync(request: Request):
 
 @router.post("/matches/recompute", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def trigger_match_recompute(request: Request):
-    if not match_service.is_computing:
+    if not await match_service.is_computing_anywhere():
         asyncio.create_task(match_service.recompute_all_matches())
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.3)
     return await match_recompute_status(request)
 
 
@@ -285,6 +285,7 @@ async def match_recompute_status(request: Request):
             "request": request,
             "is_computing": True,
             "stats": stats,
+            "is_admin": _is_admin(request),
         })
 
     # Check Redis for stats from another worker
@@ -294,6 +295,7 @@ async def match_recompute_status(request: Request):
             "request": request,
             "is_computing": True,
             "stats": shared.get("stats", {}),
+            "is_admin": _is_admin(request),
         })
 
     # Not computing — show last result if available
@@ -307,6 +309,7 @@ async def match_recompute_status(request: Request):
         "request": request,
         "is_computing": False,
         "stats": stats,
+        "is_admin": _is_admin(request),
     })
 
 

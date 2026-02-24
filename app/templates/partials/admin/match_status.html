@@ -1,43 +1,62 @@
 {% if is_computing %}
-<div class="alert alert-info py-2 mb-0"
-     hx-get="/admin/matches/status"
+<div hx-get="/admin/matches/status"
      hx-trigger="every 2s"
      hx-swap="outerHTML">
-    <div class="d-flex align-items-center mb-2">
-        <span class="spinner-border spinner-border-sm me-2" role="status"></span>
-        <strong>Match recomputation in progress...</strong>
-    </div>
-    {% set phase = stats.get("phase", "loading") %}
-    {% if phase == "loading" %}
-    <small class="text-muted">Loading researchers and opportunities...</small>
-    {% if stats.get("researchers", 0) > 0 %}
-    <br><small class="text-muted">{{ "{:,}".format(stats.get("researchers", 0)) }} researchers, {{ "{:,}".format(stats.get("opportunities", 0)) }} opportunities</small>
+    {% if is_admin %}
+    <button class="btn btn-outline-secondary btn-sm mb-2" disabled>
+        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        Recomputing...
+    </button>
     {% endif %}
-    {% elif phase == "tfidf" %}
-    <small class="text-muted">Computing TF-IDF similarity matrix for {{ "{:,}".format(stats.get("researchers", 0)) }} researchers x {{ "{:,}".format(stats.get("opportunities", 0)) }} opportunities...</small>
-    {% elif phase == "scoring" %}
-    {% set scored = stats.get("scored", 0) %}
-    {% set total_pairs = stats.get("total_pairs", 1) %}
-    {% set pct = ((scored / total_pairs * 100) | round(1)) if total_pairs > 0 else 0 %}
-    <div class="progress mb-1" style="height: 18px;">
-        <div class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
-             role="progressbar" style="width: {{ pct }}%">
-            {{ pct }}%
+    <div class="alert alert-info py-2 mb-0">
+        <div class="d-flex align-items-center mb-2">
+            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+            <strong>Match recomputation in progress...</strong>
         </div>
+        {% set phase = stats.get("phase", "loading") %}
+        {% if phase == "loading" %}
+        <small class="text-muted">Loading researchers and opportunities...</small>
+        {% if stats.get("researchers", 0) > 0 %}
+        <br><small class="text-muted">{{ "{:,}".format(stats.get("researchers", 0)) }} researchers, {{ "{:,}".format(stats.get("opportunities", 0)) }} opportunities</small>
+        {% endif %}
+        {% elif phase == "tfidf" %}
+        <small class="text-muted">Computing TF-IDF similarity matrix for {{ "{:,}".format(stats.get("researchers", 0)) }} researchers x {{ "{:,}".format(stats.get("opportunities", 0)) }} opportunities...</small>
+        {% elif phase == "scoring" %}
+        {% set scored = stats.get("scored", 0) %}
+        {% set total_pairs = stats.get("total_pairs", 1) %}
+        {% set pct = ((scored / total_pairs * 100) | round(1)) if total_pairs > 0 else 0 %}
+        <div class="progress mb-1" style="height: 18px;">
+            <div class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
+                 role="progressbar" style="width: {{ pct }}%">
+                {{ pct }}%
+            </div>
+        </div>
+        <small class="text-muted">Scoring pairs: {{ "{:,}".format(scored) }} / {{ "{:,}".format(total_pairs) }} &mdash; {{ "{:,}".format(stats.get("matches_found", 0)) }} matches found</small>
+        {% elif phase == "writing" %}
+        <small class="text-muted">Writing {{ "{:,}".format(stats.get("matches_found", 0)) }} matches to database... ({{ "{:,}".format(stats.get("matches_inserted", 0)) }} inserted)</small>
+        {% endif %}
     </div>
-    <small class="text-muted">Scoring pairs: {{ "{:,}".format(scored) }} / {{ "{:,}".format(total_pairs) }} &mdash; {{ "{:,}".format(stats.get("matches_found", 0)) }} matches found</small>
-    {% elif phase == "writing" %}
-    <small class="text-muted">Writing {{ "{:,}".format(stats.get("matches_found", 0)) }} matches to database... ({{ "{:,}".format(stats.get("matches_inserted", 0)) }} inserted)</small>
-    {% endif %}
 </div>
 
-{% elif stats.get("completed") %}
-<div class="alert {{ 'alert-danger' if stats.get('error') else 'alert-success' }} py-2 mb-0">
-    {% if stats.get("error") %}
-    <i class="bi bi-x-circle"></i> {{ stats.get("error") }}
-    {% else %}
-    <i class="bi bi-check-circle"></i> Match recomputation complete: {{ "{:,}".format(stats.get("matches_inserted", 0)) }} matches stored
-    ({{ "{:,}".format(stats.get("researchers", 0)) }} researchers x {{ "{:,}".format(stats.get("opportunities", 0)) }} opportunities)
+{% else %}
+<div>
+    {% if is_admin %}
+    <button class="btn btn-outline-primary btn-sm mb-2"
+            hx-post="/admin/matches/recompute"
+            hx-target="#match-recompute-status"
+            hx-swap="innerHTML">
+        <i class="bi bi-diagram-3"></i> Recompute Matches
+    </button>
+    {% endif %}
+    {% if stats.get("completed") %}
+    <div class="alert {{ 'alert-danger' if stats.get('error') else 'alert-success' }} py-2 mb-0">
+        {% if stats.get("error") %}
+        <i class="bi bi-x-circle"></i> {{ stats.get("error") }}
+        {% else %}
+        <i class="bi bi-check-circle"></i> Match recomputation complete: {{ "{:,}".format(stats.get("matches_inserted", 0)) }} matches stored
+        ({{ "{:,}".format(stats.get("researchers", 0)) }} researchers x {{ "{:,}".format(stats.get("opportunities", 0)) }} opportunities)
+        {% endif %}
+    </div>
     {% endif %}
 </div>
 {% endif %}

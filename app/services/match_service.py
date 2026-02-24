@@ -56,6 +56,8 @@ def _jaccard_similarity(set_a: set, set_b: set) -> float:
 
 
 MATCH_STATS_KEY = "pf:match_recompute_stats"
+MATCH_LOCK_KEY = "pf:match_recompute_lock"
+MATCH_LOCK_TTL = 300  # 5 minutes max
 
 
 class MatchService:
@@ -63,6 +65,31 @@ class MatchService:
     def __init__(self):
         self.is_computing = False
         self.match_stats: dict = {}
+
+    async def _acquire_lock(self) -> bool:
+        """Try to acquire a Redis lock for match recomputation."""
+        try:
+            if cache_service._redis:
+                return await cache_service._redis.set(
+                    MATCH_LOCK_KEY, "1", nx=True, ex=MATCH_LOCK_TTL
+                )
+        except Exception:
+            pass
+        return True  # If Redis unavailable, allow it
+
+    async def _release_lock(self):
+        """Release the Redis match recomputation lock."""
+        try:
+            await cache_service.delete(MATCH_LOCK_KEY)
+        except Exception:
+            pass
+
+    async def is_computing_anywhere(self) -> bool:
+        """Check if match recomputation is running on any worker."""
+        if self.is_computing:
+            return True
+        shared = await self.get_shared_match_stats()
+        return bool(shared and shared.get("is_computing"))
 
     async def _publish_match_stats(self):
         """Publish current match recomputation stats to Redis."""
@@ -80,6 +107,11 @@ class MatchService:
 
     async def recompute_all_matches(self):
         """Batch recompute all researcher-opportunity matches."""
+        # Acquire lock to prevent concurrent runs across workers
+        if not await self._acquire_lock():
+            logger.warning("Match recomputation already running on another worker, skipping")
+            return
+
         logger.info("Starting match recomputation...")
         self.is_computing = True
         self.match_stats = {
@@ -324,6 +356,7 @@ class MatchService:
             await self._publish_match_stats()
         finally:
             self.is_computing = False
+            await self._release_lock()
 
     async def get_matches_for_opportunity(
         self, session: AsyncSession, opportunity_id: int, limit: int = 20,

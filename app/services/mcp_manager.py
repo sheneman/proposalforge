@@ -66,7 +66,7 @@ class MCPManager:
                 "name": "SQL Database (Read-Only)",
                 "transport": "stdio",
                 "command": "npx",
-                "args": json.dumps(["-y", "@modelcontextprotocol/server-mysql"]),
+                "args": json.dumps(["-y", "@benborla29/mcp-server-mysql"]),
                 "enabled": True,
             },
             {
@@ -93,11 +93,36 @@ class MCPManager:
             if not existing:
                 session.add(MCPServer(**d))
                 count += 1
+            else:
+                # Fix known bad package names from earlier seeds
+                current_args = existing.args or ""
+                if "@modelcontextprotocol/server-mysql" in current_args:
+                    existing.args = d["args"]
+                    count += 1
 
         if count:
             await session.commit()
-            logger.info("Seeded %d default MCP server configurations", count)
+            logger.info("Seeded/updated %d MCP server configurations", count)
         return count
+
+    def _inject_db_env(self, env_vars: dict) -> dict:
+        """Inject database connection env vars for the SQL MCP server.
+
+        Parses DATABASE_URL to extract host, port, user, password, database.
+        """
+        from urllib.parse import urlparse
+        from app.config import settings
+        parsed = urlparse(settings.DATABASE_URL.replace("mysql+asyncmy://", "mysql://"))
+        db_env = {
+            "MYSQL_HOST": parsed.hostname or "db",
+            "MYSQL_PORT": str(parsed.port or 3306),
+            "MYSQL_USER": parsed.username or "",
+            "MYSQL_PASS": parsed.password or "",
+            "MYSQL_DB": (parsed.path or "/").lstrip("/") or "proposalforge",
+        }
+        # User-configured env vars take precedence
+        db_env.update(env_vars)
+        return db_env
 
     async def build_mcp_config(self, session: AsyncSession, slugs: list[str]) -> dict:
         """Build a MultiServerMCPClient-compatible config dict for the given server slugs."""
@@ -113,6 +138,10 @@ class MCPManager:
                     env_vars = json.loads(server.env_vars)
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+            # Auto-inject DB credentials for the sql server
+            if slug == "sql":
+                env_vars = self._inject_db_env(env_vars)
 
             args = []
             if server.args:
@@ -151,9 +180,9 @@ class MCPManager:
         try:
             from langchain_mcp_adapters.client import MultiServerMCPClient
 
-            async with MultiServerMCPClient(config) as client:
-                tools = client.get_tools()
-                return tools
+            client = MultiServerMCPClient(config)
+            tools = await client.get_tools()
+            return tools
         except ImportError:
             logger.warning("langchain-mcp-adapters not installed, MCP tools unavailable")
             return []

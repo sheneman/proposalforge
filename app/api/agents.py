@@ -93,13 +93,13 @@ async def test_mcp_server(slug: str, request: Request, db: AsyncSession = Depend
             return {"success": False, "error": "Server disabled or misconfigured"}
 
         from langchain_mcp_adapters.client import MultiServerMCPClient
-        async with MultiServerMCPClient(config) as client:
-            tools = client.get_tools()
-            return {
-                "success": True,
-                "tools_count": len(tools),
-                "tool_names": [t.name for t in tools[:10]],
-            }
+        client = MultiServerMCPClient(config)
+        tools = await client.get_tools()
+        return {
+            "success": True,
+            "tools_count": len(tools),
+            "tool_names": [t.name for t in tools[:10]],
+        }
     except Exception as e:
         return JSONResponse(
             status_code=500,

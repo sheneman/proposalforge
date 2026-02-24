@@ -12,85 +12,175 @@
 <div class="row">
     <!-- Left Sidebar: Filters -->
     <div class="col-md-3">
-        <div class="card shadow-sm mb-3">
+        <div class="card shadow-sm mb-3" id="filter-card">
             <div class="card-header bg-navy text-white">
                 <i class="bi bi-funnel"></i> Filters
             </div>
             <div class="card-body" id="analytics-filters">
-                <!-- Date Range -->
-                <div class="mb-3">
-                    <label class="form-label fw-semibold small">Date Range</label>
-                    <input type="date" class="form-control form-control-sm mb-1" id="filter-date-start" placeholder="Start">
-                    <input type="date" class="form-control form-control-sm" id="filter-date-end" placeholder="End">
-                </div>
 
-                <!-- Status -->
-                <div class="mb-3">
-                    <label class="form-label fw-semibold small">Status</label>
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" value="posted" id="status-posted" checked>
-                        <label class="form-check-label small" for="status-posted">Posted</label>
+                <!-- === Opportunity Filters === -->
+                <div class="filter-section" data-tab="opportunities">
+                    <!-- Date Range -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Date Range</label>
+                        <input type="date" class="form-control form-control-sm mb-1" id="filter-date-start" placeholder="Start">
+                        <input type="date" class="form-control form-control-sm" id="filter-date-end" placeholder="End">
                     </div>
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" value="forecasted" id="status-forecasted" checked>
-                        <label class="form-check-label small" for="status-forecasted">Forecasted</label>
-                    </div>
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" value="closed" id="status-closed">
-                        <label class="form-check-label small" for="status-closed">Closed</label>
-                    </div>
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" value="archived" id="status-archived">
-                        <label class="form-check-label small" for="status-archived">Archived</label>
-                    </div>
-                </div>
 
-                <!-- Agency -->
-                <div class="mb-3">
-                    <label class="form-label fw-semibold small">Agency</label>
-                    <input type="text" class="form-control form-control-sm mb-1" id="agency-search" placeholder="Search agencies...">
-                    <div class="agency-list border rounded p-2" style="max-height: 150px; overflow-y: auto;">
-                        {% for a in agencies %}
-                        {% if a.count > 0 %}
-                        <div class="form-check agency-item">
-                            <input class="form-check-input agency-cb" type="checkbox" value="{{ a.code }}" id="agency-{{ a.code }}">
-                            <label class="form-check-label small" for="agency-{{ a.code }}">
-                                {{ a.name[:35] }} <span class="text-muted">({{ a.count }})</span>
-                            </label>
-                        </div>
-                        {% endif %}
-                        {% endfor %}
-                    </div>
-                </div>
-
-                <!-- Category -->
-                <div class="mb-3">
-                    <label class="form-label fw-semibold small">Funding Category</label>
-                    <div class="border rounded p-2" style="max-height: 150px; overflow-y: auto;">
-                        {% for c in categories %}
+                    <!-- Status -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Status</label>
                         <div class="form-check">
-                            <input class="form-check-input category-cb" type="checkbox" value="{{ c.code }}" id="cat-{{ c.code }}">
-                            <label class="form-check-label small" for="cat-{{ c.code }}">
-                                {{ c.name[:35] }} <span class="text-muted">({{ c.count }})</span>
-                            </label>
+                            <input class="form-check-input" type="checkbox" value="posted" id="status-posted" checked>
+                            <label class="form-check-label small" for="status-posted">Posted</label>
                         </div>
-                        {% endfor %}
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" value="forecasted" id="status-forecasted" checked>
+                            <label class="form-check-label small" for="status-forecasted">Forecasted</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" value="closed" id="status-closed">
+                            <label class="form-check-label small" for="status-closed">Closed</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" value="archived" id="status-archived">
+                            <label class="form-check-label small" for="status-archived">Archived</label>
+                        </div>
+                    </div>
+
+                    <!-- Agency -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Agency</label>
+                        <input type="text" class="form-control form-control-sm mb-1" id="agency-search" placeholder="Search agencies...">
+                        <div class="agency-list border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                            {% for a in agencies %}
+                            {% if a.count > 0 %}
+                            <div class="form-check agency-item">
+                                <input class="form-check-input agency-cb" type="checkbox" value="{{ a.code }}" id="agency-{{ a.code }}">
+                                <label class="form-check-label small" for="agency-{{ a.code }}">
+                                    {{ a.name[:35] }} <span class="text-muted">({{ a.count }})</span>
+                                </label>
+                            </div>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Category -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Funding Category</label>
+                        <div class="border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                            {% for c in categories %}
+                            <div class="form-check">
+                                <input class="form-check-input category-cb" type="checkbox" value="{{ c.code }}" id="cat-{{ c.code }}">
+                                <label class="form-check-label small" for="cat-{{ c.code }}">
+                                    {{ c.name[:35] }} <span class="text-muted">({{ c.count }})</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Granularity -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Time Granularity</label>
+                        <select class="form-select form-select-sm" id="filter-granularity">
+                            <option value="month" selected>Month</option>
+                            <option value="quarter">Quarter</option>
+                            <option value="year">Year</option>
+                            <option value="week">Week</option>
+                        </select>
                     </div>
                 </div>
 
-                <!-- Granularity -->
-                <div class="mb-3">
-                    <label class="form-label fw-semibold small">Time Granularity</label>
-                    <select class="form-select form-select-sm" id="filter-granularity">
-                        <option value="month" selected>Month</option>
-                        <option value="quarter">Quarter</option>
-                        <option value="year">Year</option>
-                        <option value="week">Week</option>
-                    </select>
+                <!-- === Researcher Filters === -->
+                <div class="filter-section" data-tab="researchers" style="display:none;">
+                    <!-- Department -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Department</label>
+                        <input type="text" class="form-control form-control-sm mb-1" id="dept-search" placeholder="Search departments...">
+                        <div class="dept-list border rounded p-2" style="max-height: 200px; overflow-y: auto;">
+                            {% for d in departments %}
+                            <div class="form-check dept-item">
+                                <input class="form-check-input dept-cb" type="checkbox" value="{{ d.name }}" id="dept-{{ loop.index }}">
+                                <label class="form-check-label small" for="dept-{{ loop.index }}">
+                                    {{ d.name[:40] }} <span class="text-muted">({{ d.count }})</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Researcher Status -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Researcher Status</label>
+                        <div class="form-check">
+                            <input class="form-check-input res-status-cb" type="checkbox" value="ACTIVE" id="res-status-active" checked>
+                            <label class="form-check-label small" for="res-status-active">Active</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input res-status-cb" type="checkbox" value="INACTIVE" id="res-status-inactive">
+                            <label class="form-check-label small" for="res-status-inactive">Inactive</label>
+                        </div>
+                    </div>
+
+                    <!-- Keyword Search -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Keyword Filter</label>
+                        <input type="text" class="form-control form-control-sm" id="filter-keyword" placeholder="e.g. machine learning">
+                    </div>
+                </div>
+
+                <!-- === Match Filters === -->
+                <div class="filter-section" data-tab="matches" style="display:none;">
+                    <!-- Min Score -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Min Match Score: <span id="min-score-label">0</span></label>
+                        <input type="range" class="form-range" id="filter-min-score" min="0" max="100" step="5" value="0">
+                    </div>
+
+                    <!-- Agency (match context) -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Agency</label>
+                        <input type="text" class="form-control form-control-sm mb-1" id="match-agency-search" placeholder="Search agencies...">
+                        <div class="border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                            {% for a in agencies %}
+                            {% if a.count > 0 %}
+                            <div class="form-check match-agency-item">
+                                <input class="form-check-input match-agency-cb" type="checkbox" value="{{ a.code }}" id="match-agency-{{ a.code }}">
+                                <label class="form-check-label small" for="match-agency-{{ a.code }}">
+                                    {{ a.name[:35] }} <span class="text-muted">({{ a.count }})</span>
+                                </label>
+                            </div>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Department (match context) -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold small">Department</label>
+                        <input type="text" class="form-control form-control-sm mb-1" id="match-dept-search" placeholder="Search departments...">
+                        <div class="border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                            {% for d in departments %}
+                            <div class="form-check match-dept-item">
+                                <input class="form-check-input match-dept-cb" type="checkbox" value="{{ d.name }}" id="match-dept-{{ loop.index }}">
+                                <label class="form-check-label small" for="match-dept-{{ loop.index }}">
+                                    {{ d.name[:40] }} <span class="text-muted">({{ d.count }})</span>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- === Chat Filters (greyed out placeholder) === -->
+                <div class="filter-section" data-tab="chat" style="display:none;">
+                    <p class="text-muted small fst-italic mb-0">Filters are not applicable for Ask AI. Ask natural language questions directly in the chat.</p>
                 </div>
 
                 <!-- Buttons -->
-                <div class="d-grid gap-2">
+                <div class="d-grid gap-2 mt-3">
                     <button class="btn btn-navy btn-sm" id="btn-apply-filters">
                         <i class="bi bi-check-circle"></i> Apply Filters
                     </button>
@@ -105,12 +195,12 @@
     <!-- Main Content -->
     <div class="col-md-9">
         <!-- KPI Summary Cards -->
-        <div class="row mb-4" id="kpi-cards">
+        <div class="row row-cols-2 row-cols-md-4 row-cols-lg-7 g-2 mb-4" id="kpi-cards">
             <div class="col">
                 <div class="card stat-card shadow-sm text-center">
                     <div class="card-body py-2">
-                        <div class="text-muted small">Total Opportunities</div>
-                        <h4 class="text-navy mb-0" id="kpi-total">--</h4>
+                        <div class="text-muted small">Opportunities</div>
+                        <h5 class="text-navy mb-0" id="kpi-total">--</h5>
                     </div>
                 </div>
             </div>
@@ -118,31 +208,47 @@
                 <div class="card stat-card shadow-sm text-center">
                     <div class="card-body py-2">
                         <div class="text-muted small">Total Funding</div>
-                        <h4 class="text-navy mb-0" id="kpi-funding">--</h4>
+                        <h5 class="text-navy mb-0" id="kpi-funding">--</h5>
                     </div>
                 </div>
             </div>
             <div class="col">
                 <div class="card stat-card shadow-sm text-center">
                     <div class="card-body py-2">
-                        <div class="text-muted small">Avg Ceiling</div>
-                        <h4 class="text-navy mb-0" id="kpi-avg">--</h4>
+                        <div class="text-muted small">Researchers</div>
+                        <h5 class="text-navy mb-0" id="kpi-researchers">--</h5>
                     </div>
                 </div>
             </div>
             <div class="col">
                 <div class="card stat-card shadow-sm text-center">
                     <div class="card-body py-2">
-                        <div class="text-muted small">Agencies</div>
-                        <h4 class="text-navy mb-0" id="kpi-agencies">--</h4>
+                        <div class="text-muted small">Publications</div>
+                        <h5 class="text-navy mb-0" id="kpi-publications">--</h5>
                     </div>
                 </div>
             </div>
             <div class="col">
                 <div class="card stat-card shadow-sm text-center">
                     <div class="card-body py-2">
-                        <div class="text-muted small">Categories</div>
-                        <h4 class="text-navy mb-0" id="kpi-categories">--</h4>
+                        <div class="text-muted small">VERSO Grants</div>
+                        <h5 class="text-navy mb-0" id="kpi-grants">--</h5>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Total Matches</div>
+                        <h5 class="text-navy mb-0" id="kpi-matches">--</h5>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card stat-card shadow-sm text-center">
+                    <div class="card-body py-2">
+                        <div class="text-muted small">Avg Match</div>
+                        <h5 class="text-navy mb-0" id="kpi-avg-match">--</h5>
                     </div>
                 </div>
             </div>
@@ -151,23 +257,18 @@
         <!-- Tabs -->
         <ul class="nav nav-tabs" id="analyticsTabs" role="tablist">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="timeline-tab" data-bs-toggle="tab" data-bs-target="#timeline-pane" type="button" role="tab">
-                    <i class="bi bi-graph-up"></i> Timeline
+                <button class="nav-link active" id="opportunities-tab" data-bs-toggle="tab" data-bs-target="#opportunities-pane" type="button" role="tab">
+                    <i class="bi bi-file-earmark-text"></i> Opportunities
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="funding-tab" data-bs-toggle="tab" data-bs-target="#funding-pane" type="button" role="tab">
-                    <i class="bi bi-currency-dollar"></i> Funding
+                <button class="nav-link" id="researchers-tab" data-bs-toggle="tab" data-bs-target="#researchers-pane" type="button" role="tab">
+                    <i class="bi bi-people"></i> Researchers
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="agencies-tab" data-bs-toggle="tab" data-bs-target="#agencies-pane" type="button" role="tab">
-                    <i class="bi bi-building"></i> Agencies
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="categories-tab" data-bs-toggle="tab" data-bs-target="#categories-pane" type="button" role="tab">
-                    <i class="bi bi-tags"></i> Categories
+                <button class="nav-link" id="matches-tab" data-bs-toggle="tab" data-bs-target="#matches-pane" type="button" role="tab">
+                    <i class="bi bi-link-45deg"></i> Matches
                 </button>
             </li>
             <li class="nav-item" role="presentation">
@@ -178,20 +279,23 @@
         </ul>
 
         <div class="tab-content border border-top-0 rounded-bottom bg-white p-3" id="analyticsTabContent">
-            <!-- Timeline Tab -->
-            <div class="tab-pane fade show active" id="timeline-pane" role="tabpanel">
+
+            <!-- ==================== Opportunities Tab ==================== -->
+            <div class="tab-pane fade show active" id="opportunities-pane" role="tabpanel">
+
+                <!-- Timeline Section -->
+                <h5 class="text-navy mb-3 border-bottom pb-2"><i class="bi bi-graph-up"></i> Timeline</h5>
                 <h6 class="text-navy mb-3">Opportunities Over Time</h6>
                 <div class="chart-container mb-4">
                     <canvas id="chart-timeline"></canvas>
                 </div>
                 <h6 class="text-navy mb-3">Close Dates Over Time</h6>
-                <div class="chart-container">
+                <div class="chart-container mb-4">
                     <canvas id="chart-close-dates"></canvas>
                 </div>
-            </div>
 
-            <!-- Funding Tab -->
-            <div class="tab-pane fade" id="funding-pane" role="tabpanel">
+                <!-- Funding Section -->
+                <h5 class="text-navy mb-3 border-bottom pb-2 mt-4"><i class="bi bi-currency-dollar"></i> Funding</h5>
                 <div class="row">
                     <div class="col-md-6 mb-4">
                         <h6 class="text-navy mb-3">Award Ceiling Distribution</h6>
@@ -220,10 +324,9 @@
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Agencies Tab -->
-            <div class="tab-pane fade" id="agencies-pane" role="tabpanel">
+                <!-- Agencies Section -->
+                <h5 class="text-navy mb-3 border-bottom pb-2 mt-4"><i class="bi bi-building"></i> Agencies</h5>
                 <h6 class="text-navy mb-3">Agency Comparison by Status</h6>
                 <div class="chart-container chart-container-tall mb-4">
                     <canvas id="chart-agency-comp"></canvas>
@@ -233,13 +336,12 @@
                     <canvas id="chart-agency-activity"></canvas>
                 </div>
                 <h6 class="text-navy mb-3">Agency x Category (Bubble Chart)</h6>
-                <div class="chart-container chart-container-tall">
+                <div class="chart-container chart-container-tall mb-4">
                     <canvas id="chart-agency-category"></canvas>
                 </div>
-            </div>
 
-            <!-- Categories Tab -->
-            <div class="tab-pane fade" id="categories-pane" role="tabpanel">
+                <!-- Categories Section -->
+                <h5 class="text-navy mb-3 border-bottom pb-2 mt-4"><i class="bi bi-tags"></i> Categories</h5>
                 <h6 class="text-navy mb-3">Funding by Category</h6>
                 <div class="chart-container mb-4">
                     <canvas id="chart-cat-funding"></canvas>
@@ -260,12 +362,147 @@
                 </div>
             </div>
 
-            <!-- Chat Tab -->
+            <!-- ==================== Researchers Tab ==================== -->
+            <div class="tab-pane fade" id="researchers-pane" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Researchers by Department (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-res-dept"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Researcher Status</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-res-status"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Top Research Keywords (Top 20)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-res-keywords"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Publications Over Time</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-pub-time"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">VERSO Grant Funding by Funder (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-grant-funder"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">VERSO Activity Types</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-act-types"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <h6 class="text-navy mb-3">Researcher Engagement (Top 15)</h6>
+                <div class="chart-container chart-container-tall mb-4">
+                    <canvas id="chart-res-engage"></canvas>
+                </div>
+            </div>
+
+            <!-- ==================== Matches Tab ==================== -->
+            <div class="tab-pane fade" id="matches-pane" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Score Distribution</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-match-dist"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Score Component Breakdown</h6>
+                        <div class="chart-container">
+                            <canvas id="chart-match-comp"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Top-Matched Researchers (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-match-researchers"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Top-Matched Opportunities (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-match-opportunities"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Match Quality by Department (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-match-dept"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <h6 class="text-navy mb-3">Match Quality by Agency (Top 15)</h6>
+                        <div class="chart-container chart-container-tall">
+                            <canvas id="chart-match-agency"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <!-- Coverage Analysis -->
+                <h6 class="text-navy mb-3">Coverage Analysis</h6>
+                <div class="row" id="coverage-cards">
+                    <div class="col-md-3 mb-3">
+                        <div class="card bg-light text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Opportunity Coverage</div>
+                                <h4 class="text-navy mb-0" id="coverage-opp-pct">--</h4>
+                                <div class="text-muted small" id="coverage-opp-detail"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <div class="card bg-light text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Researcher Coverage</div>
+                                <h4 class="text-navy mb-0" id="coverage-res-pct">--</h4>
+                                <div class="text-muted small" id="coverage-res-detail"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <div class="card bg-light text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Total Matches</div>
+                                <h4 class="text-navy mb-0" id="coverage-total">--</h4>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <div class="card bg-light text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Strong Matches</div>
+                                <h4 class="text-navy mb-0" id="coverage-strong">--</h4>
+                                <div class="text-muted small" id="coverage-threshold"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== Chat Tab ==================== -->
             <div class="tab-pane fade" id="chat-pane" role="tabpanel">
                 <div class="chat-container">
                     <div class="chat-messages" id="chat-messages">
                         <div class="chat-bubble chat-assistant" id="chat-welcome">
-                            <p class="mb-2">I can help you explore the grant opportunities database. Try asking questions like:</p>
+                            <p class="mb-2">I can help you explore the grant opportunities, researcher, and match data. Try asking questions like:</p>
                             <ul class="small mb-2">
                                 <li>"How many open opportunities are there?"</li>
                                 <li>"Show me top 10 agencies by total funding"</li>
@@ -273,12 +510,20 @@
                                 <li>"What is the average award ceiling for NSF grants?"</li>
                                 <li>"Which categories have the most team-based opportunities?"</li>
                             </ul>
+                            <p class="mb-2"><i class="bi bi-people"></i> <strong>Researcher &amp; Match Queries:</strong></p>
+                            <ul class="small mb-2">
+                                <li>"How many researchers are in the database?"</li>
+                                <li>"Top departments by researcher count"</li>
+                                <li>"Show the best researcher-opportunity matches"</li>
+                                <li>"What is the average match score by department?"</li>
+                                <li>"Which researchers have the most publications?"</li>
+                            </ul>
                             <p class="mb-2 text-danger"><i class="bi bi-bar-chart"></i> <strong>Visualizations</strong> &mdash; use words like <em>plot</em>, <em>chart</em>, <em>graph</em>, or <em>visualize</em> to generate charts:</p>
                             <ul class="small mb-0 text-danger">
                                 <li>"Plot the top 10 agencies by funding"</li>
                                 <li>"Show a <strong>pie chart</strong> of opportunities by status"</li>
-                                <li>"Graph opportunities posted per month as a <strong>line chart</strong>"</li>
-                                <li>"Visualize funding categories as a <strong>doughnut chart</strong>"</li>
+                                <li>"Graph publications per month as a <strong>line chart</strong>"</li>
+                                <li>"Visualize match score distribution as a <strong>bar chart</strong>"</li>
                             </ul>
                         </div>
                     </div>

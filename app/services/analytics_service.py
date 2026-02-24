@@ -6,7 +6,15 @@ from typing import Any
 from sqlalchemy import select, func, text, case, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Opportunity, Agency, OpportunityFundingCategory
+from app.models import (
+    Opportunity, Agency, OpportunityFundingCategory,
+    Researcher, ResearcherKeyword, ResearcherAffiliation,
+    Publication, ResearcherPublication,
+    Grant, ResearcherGrant,
+    Project, ResearcherProject,
+    Activity, ResearcherActivity,
+    ResearcherOpportunityMatch,
+)
 from app.services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
@@ -1041,6 +1049,988 @@ class AnalyticsService:
         }
         await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
         return chart_data
+
+
+    # --- Researcher Helpers ---
+
+    def _build_researcher_conditions(
+        self,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> list:
+        conditions = []
+        if researcher_status:
+            conditions.append(Researcher.status.in_(researcher_status))
+        return conditions
+
+    def _build_match_conditions(
+        self,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> list:
+        conditions = []
+        if min_score is not None:
+            conditions.append(ResearcherOpportunityMatch.score >= min_score)
+        return conditions
+
+    # --- Expanded KPIs ---
+
+    async def cross_domain_kpis(
+        self,
+        session: AsyncSession,
+        status: list[str] | None = None,
+        agency_codes: list[str] | None = None,
+        category_codes: list[str] | None = None,
+        date_start: date | None = None,
+        date_end: date | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "xkpis", status=status, agency=agency_codes,
+            category=category_codes, ds=date_start, de=date_end,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        # Opportunity KPIs (reuse existing)
+        opp_kpis = await self.summary_kpis(
+            session, status=status, agency_codes=agency_codes,
+            category_codes=category_codes, date_start=date_start, date_end=date_end,
+        )
+
+        # Researcher count
+        res_result = await session.execute(select(func.count(Researcher.id)))
+        researcher_count = res_result.scalar() or 0
+
+        # Publication count
+        pub_result = await session.execute(select(func.count(Publication.id)))
+        publication_count = pub_result.scalar() or 0
+
+        # VERSO Grant count
+        grant_result = await session.execute(select(func.count(Grant.id)))
+        grant_count = grant_result.scalar() or 0
+
+        # Match stats
+        match_result = await session.execute(
+            select(
+                func.count(ResearcherOpportunityMatch.id),
+                func.avg(ResearcherOpportunityMatch.score),
+            )
+        )
+        match_row = match_result.one()
+
+        kpis = {
+            **opp_kpis,
+            "researchers": researcher_count,
+            "publications": publication_count,
+            "verso_grants": grant_count,
+            "total_matches": match_row[0] or 0,
+            "avg_match_score": round(float(match_row[1] or 0), 1),
+        }
+
+        await cache_service.set(cache_key, kpis, ANALYTICS_TTL)
+        return kpis
+
+    # --- Researcher Tab (7 charts) ---
+
+    async def researchers_by_department(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "res_dept", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = [ResearcherAffiliation.organization_name.isnot(None)]
+        if researcher_status:
+            conditions.append(Researcher.status.in_(researcher_status))
+        if departments:
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+        if keyword:
+            conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+
+        stmt = (
+            select(
+                ResearcherAffiliation.organization_name,
+                func.count(func.distinct(ResearcherAffiliation.researcher_id)).label("count"),
+            )
+            .join(Researcher, Researcher.id == ResearcherAffiliation.researcher_id)
+        )
+        if keyword:
+            stmt = stmt.join(ResearcherKeyword, ResearcherKeyword.researcher_id == Researcher.id)
+
+        stmt = (
+            stmt.where(and_(*conditions))
+            .group_by(ResearcherAffiliation.organization_name)
+            .order_by(func.count(func.distinct(ResearcherAffiliation.researcher_id)).desc())
+            .limit(15)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [{
+                "label": "Researchers",
+                "data": [int(r[1]) for r in rows],
+                "backgroundColor": "#2c5282",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def researcher_status_breakdown(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "res_status", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = []
+        if researcher_status:
+            conditions.append(Researcher.status.in_(researcher_status))
+        if departments:
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+        if keyword:
+            conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+
+        stmt = select(
+            Researcher.status,
+            func.count(Researcher.id).label("count"),
+        )
+        if departments:
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+        if keyword:
+            stmt = stmt.join(ResearcherKeyword, ResearcherKeyword.researcher_id == Researcher.id)
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = stmt.group_by(Researcher.status).order_by(func.count(Researcher.id).desc())
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        colors = ["#2c5282", "#d4a843", "#6b9bd2", "#a8c8e8", "#52b788"]
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [{
+                "label": "Researchers",
+                "data": [int(r[1]) for r in rows],
+                "backgroundColor": colors[:len(rows)],
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def top_research_keywords(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "res_keywords", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = [ResearcherKeyword.keyword.isnot(None)]
+        if researcher_status:
+            conditions.append(Researcher.status.in_(researcher_status))
+        if departments:
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+        if keyword:
+            conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+
+        stmt = (
+            select(
+                ResearcherKeyword.keyword,
+                func.count(ResearcherKeyword.id).label("count"),
+            )
+            .join(Researcher, Researcher.id == ResearcherKeyword.researcher_id)
+        )
+        if departments:
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+
+        stmt = (
+            stmt.where(and_(*conditions))
+            .group_by(ResearcherKeyword.keyword)
+            .order_by(func.count(ResearcherKeyword.id).desc())
+            .limit(20)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] for r in rows],
+            "datasets": [{
+                "label": "Occurrences",
+                "data": [int(r[1]) for r in rows],
+                "backgroundColor": "#1a365d",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def publications_over_time(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "pub_time", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = [Publication.publication_date.isnot(None)]
+        if researcher_status or departments or keyword:
+            # Need to join through researcher
+            stmt = (
+                select(
+                    func.substring(Publication.publication_date, 1, 7).label("period"),
+                    func.count(func.distinct(Publication.id)).label("count"),
+                )
+                .join(ResearcherPublication, ResearcherPublication.publication_id == Publication.id)
+                .join(Researcher, Researcher.id == ResearcherPublication.researcher_id)
+            )
+            if researcher_status:
+                conditions.append(Researcher.status.in_(researcher_status))
+            if departments:
+                stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+                conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+            if keyword:
+                stmt = stmt.join(ResearcherKeyword, ResearcherKeyword.researcher_id == Researcher.id)
+                conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+        else:
+            stmt = select(
+                func.substring(Publication.publication_date, 1, 7).label("period"),
+                func.count(Publication.id).label("count"),
+            )
+
+        stmt = (
+            stmt.where(and_(*conditions))
+            .group_by("period")
+            .order_by(text("period"))
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] for r in rows],
+            "datasets": [{
+                "label": "Publications",
+                "data": [int(r[1]) for r in rows],
+                "borderColor": "#2c5282",
+                "backgroundColor": "#2c528233",
+                "fill": True,
+                "tension": 0.3,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def grant_funding_by_funder(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "grant_funder", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = [Grant.funder.isnot(None), Grant.amount.isnot(None)]
+
+        if researcher_status or departments or keyword:
+            stmt = (
+                select(
+                    Grant.funder,
+                    func.sum(Grant.amount).label("total"),
+                )
+                .join(ResearcherGrant, ResearcherGrant.grant_id == Grant.id)
+                .join(Researcher, Researcher.id == ResearcherGrant.researcher_id)
+            )
+            if researcher_status:
+                conditions.append(Researcher.status.in_(researcher_status))
+            if departments:
+                stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+                conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+            if keyword:
+                stmt = stmt.join(ResearcherKeyword, ResearcherKeyword.researcher_id == Researcher.id)
+                conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+        else:
+            stmt = select(
+                Grant.funder,
+                func.sum(Grant.amount).label("total"),
+            )
+
+        stmt = (
+            stmt.where(and_(*conditions))
+            .group_by(Grant.funder)
+            .order_by(func.sum(Grant.amount).desc())
+            .limit(15)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [{
+                "label": "Total Funding ($)",
+                "data": [float(r[1] or 0) for r in rows],
+                "backgroundColor": "#d4a843",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def activity_types(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "act_types", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = [Activity.activity_type.isnot(None)]
+
+        if researcher_status or departments or keyword:
+            stmt = (
+                select(
+                    Activity.activity_type,
+                    func.count(func.distinct(Activity.id)).label("count"),
+                )
+                .join(ResearcherActivity, ResearcherActivity.activity_id == Activity.id)
+                .join(Researcher, Researcher.id == ResearcherActivity.researcher_id)
+            )
+            if researcher_status:
+                conditions.append(Researcher.status.in_(researcher_status))
+            if departments:
+                stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+                conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+            if keyword:
+                stmt = stmt.join(ResearcherKeyword, ResearcherKeyword.researcher_id == Researcher.id)
+                conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+        else:
+            stmt = select(
+                Activity.activity_type,
+                func.count(Activity.id).label("count"),
+            )
+
+        stmt = (
+            stmt.where(and_(*conditions))
+            .group_by(Activity.activity_type)
+            .order_by(func.count(Activity.id).desc())
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        colors = [
+            "#1a365d", "#2c5282", "#d4a843", "#e8c97a", "#2d6a4f",
+            "#52b788", "#b5838d", "#6d6875", "#e5989b", "#a8c8e8",
+        ]
+
+        chart_data = {
+            "labels": [r[0] for r in rows],
+            "datasets": [{
+                "label": "Activities",
+                "data": [int(r[1]) for r in rows],
+                "backgroundColor": colors[:len(rows)],
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def researcher_engagement(
+        self,
+        session: AsyncSession,
+        departments: list[str] | None = None,
+        researcher_status: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "res_engage", dept=departments, rstatus=researcher_status, kw=keyword,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = []
+        if researcher_status:
+            conditions.append(Researcher.status.in_(researcher_status))
+        if departments:
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+        if keyword:
+            conditions.append(ResearcherKeyword.keyword.ilike(f"%{keyword}%"))
+
+        # Subqueries for counts per researcher
+        pub_sub = (
+            select(
+                ResearcherPublication.researcher_id,
+                func.count(ResearcherPublication.id).label("pub_count"),
+            )
+            .group_by(ResearcherPublication.researcher_id)
+            .subquery()
+        )
+        grant_sub = (
+            select(
+                ResearcherGrant.researcher_id,
+                func.count(ResearcherGrant.id).label("grant_count"),
+            )
+            .group_by(ResearcherGrant.researcher_id)
+            .subquery()
+        )
+        proj_sub = (
+            select(
+                ResearcherProject.researcher_id,
+                func.count(ResearcherProject.id).label("proj_count"),
+            )
+            .group_by(ResearcherProject.researcher_id)
+            .subquery()
+        )
+        act_sub = (
+            select(
+                ResearcherActivity.researcher_id,
+                func.count(ResearcherActivity.id).label("act_count"),
+            )
+            .group_by(ResearcherActivity.researcher_id)
+            .subquery()
+        )
+
+        # Total engagement = sum of all counts
+        total_expr = (
+            func.coalesce(pub_sub.c.pub_count, 0)
+            + func.coalesce(grant_sub.c.grant_count, 0)
+            + func.coalesce(proj_sub.c.proj_count, 0)
+            + func.coalesce(act_sub.c.act_count, 0)
+        )
+
+        stmt = (
+            select(
+                Researcher.full_name,
+                func.coalesce(pub_sub.c.pub_count, 0).label("publications"),
+                func.coalesce(grant_sub.c.grant_count, 0).label("grants"),
+                func.coalesce(proj_sub.c.proj_count, 0).label("projects"),
+                func.coalesce(act_sub.c.act_count, 0).label("activities"),
+            )
+            .outerjoin(pub_sub, pub_sub.c.researcher_id == Researcher.id)
+            .outerjoin(grant_sub, grant_sub.c.researcher_id == Researcher.id)
+            .outerjoin(proj_sub, proj_sub.c.researcher_id == Researcher.id)
+            .outerjoin(act_sub, act_sub.c.researcher_id == Researcher.id)
+        )
+
+        if departments:
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+        if keyword:
+            stmt = stmt.join(ResearcherKeyword, ResearcherKeyword.researcher_id == Researcher.id)
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = stmt.order_by(total_expr.desc()).limit(15)
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [
+                {
+                    "label": "Publications",
+                    "data": [int(r[1]) for r in rows],
+                    "backgroundColor": "#2c5282",
+                },
+                {
+                    "label": "Grants",
+                    "data": [int(r[2]) for r in rows],
+                    "backgroundColor": "#d4a843",
+                },
+                {
+                    "label": "Projects",
+                    "data": [int(r[3]) for r in rows],
+                    "backgroundColor": "#52b788",
+                },
+                {
+                    "label": "Activities",
+                    "data": [int(r[4]) for r in rows],
+                    "backgroundColor": "#b5838d",
+                },
+            ],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    # --- Match Tab (7 charts) ---
+
+    async def match_score_distribution(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_dist", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        buckets = [
+            ("0-10", 0, 10), ("10-20", 10, 20), ("20-30", 20, 30),
+            ("30-40", 30, 40), ("40-50", 40, 50), ("50-60", 50, 60),
+            ("60-70", 60, 70), ("70-80", 70, 80), ("80-90", 80, 90),
+            ("90-100", 90, 101),
+        ]
+
+        case_exprs = []
+        for label, low, high in buckets:
+            case_exprs.append(
+                func.sum(case(
+                    (and_(
+                        ResearcherOpportunityMatch.score >= low,
+                        ResearcherOpportunityMatch.score < high,
+                    ), 1),
+                    else_=0,
+                ))
+            )
+
+        stmt = select(*case_exprs).select_from(ResearcherOpportunityMatch)
+
+        conditions = self._build_match_conditions(min_score, agency_codes, departments)
+        if agency_codes:
+            stmt = stmt.join(Opportunity, Opportunity.id == ResearcherOpportunityMatch.opportunity_id)
+            conditions.append(Opportunity.agency_code.in_(agency_codes))
+        if departments:
+            stmt = stmt.join(Researcher, Researcher.id == ResearcherOpportunityMatch.researcher_id)
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        result = await session.execute(stmt)
+        row = result.one()
+
+        colors = [
+            "#c4dbf0", "#a8c8e8", "#8bb5e0", "#6b9bd2", "#4a80b8",
+            "#3b6ba5", "#2c5282", "#1a365d", "#d4a843", "#e8c97a",
+        ]
+
+        chart_data = {
+            "labels": [b[0] for b in buckets],
+            "datasets": [{
+                "label": "Matches",
+                "data": [int(row[i] or 0) for i in range(len(buckets))],
+                "backgroundColor": colors,
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def match_component_breakdown(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_comp", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        stmt = (
+            select(
+                func.avg(ResearcherOpportunityMatch.keyword_score).label("avg_keyword"),
+                func.avg(ResearcherOpportunityMatch.text_score).label("avg_text"),
+                func.avg(ResearcherOpportunityMatch.agency_score).label("avg_agency"),
+            )
+            .select_from(ResearcherOpportunityMatch)
+        )
+
+        conditions = self._build_match_conditions(min_score, agency_codes, departments)
+        if agency_codes:
+            stmt = stmt.join(Opportunity, Opportunity.id == ResearcherOpportunityMatch.opportunity_id)
+            conditions.append(Opportunity.agency_code.in_(agency_codes))
+        if departments:
+            stmt = stmt.join(Researcher, Researcher.id == ResearcherOpportunityMatch.researcher_id)
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        result = await session.execute(stmt)
+        row = result.one()
+
+        chart_data = {
+            "labels": ["Keyword Score", "Text Score", "Agency Score"],
+            "datasets": [{
+                "label": "Average Score",
+                "data": [
+                    round(float(row[0] or 0), 1),
+                    round(float(row[1] or 0), 1),
+                    round(float(row[2] or 0), 1),
+                ],
+                "backgroundColor": ["#2c5282", "#d4a843", "#52b788"],
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def top_matched_researchers(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_top_res", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = self._build_match_conditions(min_score, agency_codes, departments)
+
+        stmt = (
+            select(
+                Researcher.full_name,
+                func.avg(ResearcherOpportunityMatch.score).label("avg_score"),
+            )
+            .join(Researcher, Researcher.id == ResearcherOpportunityMatch.researcher_id)
+        )
+
+        if agency_codes:
+            stmt = stmt.join(Opportunity, Opportunity.id == ResearcherOpportunityMatch.opportunity_id)
+            conditions.append(Opportunity.agency_code.in_(agency_codes))
+        if departments:
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = (
+            stmt.group_by(Researcher.id, Researcher.full_name)
+            .order_by(func.avg(ResearcherOpportunityMatch.score).desc())
+            .limit(15)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [{
+                "label": "Avg Match Score",
+                "data": [round(float(r[1] or 0), 1) for r in rows],
+                "backgroundColor": "#2c5282",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def top_matched_opportunities(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_top_opp", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        # Count of strong matches (score >= 30) per opportunity
+        threshold = max(min_score or 30, 30)
+        conditions = [ResearcherOpportunityMatch.score >= threshold]
+
+        stmt = (
+            select(
+                Opportunity.title,
+                func.count(ResearcherOpportunityMatch.id).label("strong_matches"),
+            )
+            .join(Opportunity, Opportunity.id == ResearcherOpportunityMatch.opportunity_id)
+        )
+
+        if agency_codes:
+            conditions.append(Opportunity.agency_code.in_(agency_codes))
+        if departments:
+            stmt = stmt.join(Researcher, Researcher.id == ResearcherOpportunityMatch.researcher_id)
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = (
+            stmt.group_by(Opportunity.id, Opportunity.title)
+            .order_by(func.count(ResearcherOpportunityMatch.id).desc())
+            .limit(15)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [(r[0] or "Unknown")[:60] for r in rows],
+            "datasets": [{
+                "label": f"Strong Matches (score >= {threshold})",
+                "data": [int(r[1]) for r in rows],
+                "backgroundColor": "#d4a843",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def match_quality_by_department(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_dept", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = [ResearcherAffiliation.organization_name.isnot(None)]
+        conditions.extend(self._build_match_conditions(min_score, agency_codes, departments))
+
+        stmt = (
+            select(
+                ResearcherAffiliation.organization_name,
+                func.avg(ResearcherOpportunityMatch.score).label("avg_score"),
+            )
+            .join(Researcher, Researcher.id == ResearcherOpportunityMatch.researcher_id)
+            .join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+        )
+
+        if agency_codes:
+            stmt = stmt.join(Opportunity, Opportunity.id == ResearcherOpportunityMatch.opportunity_id)
+            conditions.append(Opportunity.agency_code.in_(agency_codes))
+        if departments:
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = (
+            stmt.group_by(ResearcherAffiliation.organization_name)
+            .order_by(func.avg(ResearcherOpportunityMatch.score).desc())
+            .limit(15)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [{
+                "label": "Avg Match Score",
+                "data": [round(float(r[1] or 0), 1) for r in rows],
+                "backgroundColor": "#2c5282",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def match_quality_by_agency(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_agency", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        conditions = self._build_match_conditions(min_score, agency_codes, departments)
+
+        stmt = (
+            select(
+                Agency.name,
+                func.avg(ResearcherOpportunityMatch.score).label("avg_score"),
+            )
+            .join(Opportunity, Opportunity.id == ResearcherOpportunityMatch.opportunity_id)
+            .join(Agency, Agency.code == Opportunity.agency_code)
+        )
+
+        if agency_codes:
+            conditions.append(Opportunity.agency_code.in_(agency_codes))
+        if departments:
+            stmt = stmt.join(Researcher, Researcher.id == ResearcherOpportunityMatch.researcher_id)
+            stmt = stmt.join(ResearcherAffiliation, ResearcherAffiliation.researcher_id == Researcher.id)
+            conditions.append(ResearcherAffiliation.organization_name.in_(departments))
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = (
+            stmt.group_by(Agency.name)
+            .order_by(func.avg(ResearcherOpportunityMatch.score).desc())
+            .limit(15)
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        chart_data = {
+            "labels": [r[0] or "Unknown" for r in rows],
+            "datasets": [{
+                "label": "Avg Match Score",
+                "data": [round(float(r[1] or 0), 1) for r in rows],
+                "backgroundColor": "#1a365d",
+                "borderRadius": 4,
+            }],
+        }
+        await cache_service.set(cache_key, chart_data, ANALYTICS_TTL)
+        return chart_data
+
+    async def match_coverage(
+        self,
+        session: AsyncSession,
+        min_score: float | None = None,
+        agency_codes: list[str] | None = None,
+        departments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(
+            "match_coverage", minscore=min_score, agency=agency_codes, dept=departments,
+        )
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        threshold = min_score or 30
+
+        # Total opportunities and researchers
+        total_opps = (await session.execute(select(func.count(Opportunity.id)))).scalar() or 1
+        total_researchers = (await session.execute(select(func.count(Researcher.id)))).scalar() or 1
+
+        # Opportunities with at least one match >= threshold
+        opps_with_match = (await session.execute(
+            select(func.count(func.distinct(ResearcherOpportunityMatch.opportunity_id)))
+            .where(ResearcherOpportunityMatch.score >= threshold)
+        )).scalar() or 0
+
+        # Researchers with at least one match >= threshold
+        res_with_match = (await session.execute(
+            select(func.count(func.distinct(ResearcherOpportunityMatch.researcher_id)))
+            .where(ResearcherOpportunityMatch.score >= threshold)
+        )).scalar() or 0
+
+        # Total matches and strong matches
+        match_stats = (await session.execute(
+            select(
+                func.count(ResearcherOpportunityMatch.id),
+                func.sum(case(
+                    (ResearcherOpportunityMatch.score >= threshold, 1),
+                    else_=0,
+                )),
+            )
+        )).one()
+
+        data = {
+            "threshold": threshold,
+            "total_opportunities": total_opps,
+            "opportunities_with_match": opps_with_match,
+            "opportunity_coverage_pct": round(opps_with_match / total_opps * 100, 1),
+            "total_researchers": total_researchers,
+            "researchers_with_match": res_with_match,
+            "researcher_coverage_pct": round(res_with_match / total_researchers * 100, 1),
+            "total_matches": int(match_stats[0] or 0),
+            "strong_matches": int(match_stats[1] or 0),
+        }
+
+        await cache_service.set(cache_key, data, ANALYTICS_TTL)
+        return data
+
+    # --- Sidebar Data ---
+
+    async def get_departments(self, session: AsyncSession) -> list[dict]:
+        """Get list of departments for filter sidebar."""
+        cache_key = "pf:analytics:departments"
+        cached = await cache_service.get(cache_key)
+        if cached:
+            return cached
+
+        stmt = (
+            select(
+                ResearcherAffiliation.organization_name,
+                func.count(func.distinct(ResearcherAffiliation.researcher_id)).label("count"),
+            )
+            .where(ResearcherAffiliation.organization_name.isnot(None))
+            .group_by(ResearcherAffiliation.organization_name)
+            .order_by(func.count(func.distinct(ResearcherAffiliation.researcher_id)).desc())
+        )
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        departments = [{"name": r[0], "count": r[1]} for r in rows]
+        await cache_service.set(cache_key, departments, 3600)
+        return departments
 
 
 analytics_service = AnalyticsService()

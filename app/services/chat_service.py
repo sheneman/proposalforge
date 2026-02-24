@@ -179,6 +179,78 @@ Q: How many publications are in the database?
 ```sql
 SELECT COUNT(*) AS total_publications FROM publications LIMIT 1
 ```
+
+Q: Average match score by department
+```sql
+SELECT ra.organization_name AS department, ROUND(AVG(rom.score), 1) AS avg_score, COUNT(*) AS num_matches
+FROM researcher_opportunity_matches rom
+JOIN researchers r ON r.id = rom.researcher_id
+JOIN researcher_affiliations ra ON ra.researcher_id = r.id
+WHERE ra.organization_name IS NOT NULL
+GROUP BY ra.organization_name
+ORDER BY avg_score DESC
+LIMIT 15
+```
+
+Q: Score distribution of researcher-opportunity matches
+```sql
+SELECT
+  CASE
+    WHEN score < 10 THEN '0-10'
+    WHEN score < 20 THEN '10-20'
+    WHEN score < 30 THEN '20-30'
+    WHEN score < 40 THEN '30-40'
+    WHEN score < 50 THEN '40-50'
+    WHEN score < 60 THEN '50-60'
+    WHEN score < 70 THEN '60-70'
+    WHEN score < 80 THEN '70-80'
+    WHEN score < 90 THEN '80-90'
+    ELSE '90-100'
+  END AS score_bucket,
+  COUNT(*) AS num_matches
+FROM researcher_opportunity_matches
+GROUP BY score_bucket
+ORDER BY MIN(score)
+LIMIT 10
+```
+
+Q: VERSO grants by funder with total funding
+```sql
+SELECT g.funder, COUNT(*) AS num_grants, SUM(g.amount) AS total_funding
+FROM grants g
+WHERE g.funder IS NOT NULL AND g.amount IS NOT NULL
+GROUP BY g.funder
+ORDER BY total_funding DESC
+LIMIT 15
+```
+
+Q: Average match score components (keyword, text, agency)
+```sql
+SELECT ROUND(AVG(keyword_score), 1) AS avg_keyword, ROUND(AVG(text_score), 1) AS avg_text, ROUND(AVG(agency_score), 1) AS avg_agency
+FROM researcher_opportunity_matches
+LIMIT 1
+```
+
+Q: Opportunities with the most strong researcher matches
+```sql
+SELECT o.title, COUNT(*) AS strong_matches
+FROM researcher_opportunity_matches rom
+JOIN opportunities o ON o.id = rom.opportunity_id
+WHERE rom.score >= 30
+GROUP BY o.id, o.title
+ORDER BY strong_matches DESC
+LIMIT 15
+```
+
+Q: How many projects are researchers involved in?
+```sql
+SELECT r.full_name, COUNT(rp.project_id) AS num_projects
+FROM researchers r
+JOIN researcher_projects rp ON rp.researcher_id = r.id
+GROUP BY r.id, r.full_name
+ORDER BY num_projects DESC
+LIMIT 15
+```
 """
 
 # Query templates for pattern matching
@@ -247,6 +319,41 @@ QUERY_TEMPLATES = [
         "patterns": ["publication.*count", "how many publication", "total publication"],
         "template": "SELECT COUNT(*) AS total_publications FROM publications LIMIT 1",
         "description": "Total publication count",
+    },
+    {
+        "patterns": ["match.*department", "department.*match", "match.*quality.*department"],
+        "template": "SELECT ra.organization_name AS department, ROUND(AVG(rom.score), 1) AS avg_score, COUNT(*) AS num_matches FROM researcher_opportunity_matches rom JOIN researchers r ON r.id = rom.researcher_id JOIN researcher_affiliations ra ON ra.researcher_id = r.id WHERE ra.organization_name IS NOT NULL GROUP BY ra.organization_name ORDER BY avg_score DESC LIMIT 15",
+        "description": "Match quality by department",
+    },
+    {
+        "patterns": ["score.*distribution", "distribution.*score", "match.*bucket", "score.*bucket"],
+        "template": "SELECT CASE WHEN score < 10 THEN '0-10' WHEN score < 20 THEN '10-20' WHEN score < 30 THEN '20-30' WHEN score < 40 THEN '30-40' WHEN score < 50 THEN '40-50' WHEN score < 60 THEN '50-60' WHEN score < 70 THEN '60-70' WHEN score < 80 THEN '70-80' WHEN score < 90 THEN '80-90' ELSE '90-100' END AS score_bucket, COUNT(*) AS num_matches FROM researcher_opportunity_matches GROUP BY score_bucket ORDER BY MIN(score) LIMIT 10",
+        "description": "Match score distribution",
+    },
+    {
+        "patterns": ["verso.*grant", "grant.*funder", "funder.*funding", "research.*grant"],
+        "template": "SELECT g.funder, COUNT(*) AS num_grants, SUM(g.amount) AS total_funding FROM grants g WHERE g.funder IS NOT NULL GROUP BY g.funder ORDER BY total_funding DESC LIMIT 15",
+        "description": "VERSO grants by funder",
+    },
+    {
+        "patterns": ["project.*count", "how many project", "researcher.*project"],
+        "template": "SELECT r.full_name, COUNT(rp.project_id) AS num_projects FROM researchers r JOIN researcher_projects rp ON rp.researcher_id = r.id GROUP BY r.id, r.full_name ORDER BY num_projects DESC LIMIT 15",
+        "description": "Researchers by project count",
+    },
+    {
+        "patterns": ["activity.*type", "type.*activit", "verso.*activit"],
+        "template": "SELECT a.activity_type, COUNT(*) AS num_activities FROM activities a WHERE a.activity_type IS NOT NULL GROUP BY a.activity_type ORDER BY num_activities DESC LIMIT 20",
+        "description": "Activity types",
+    },
+    {
+        "patterns": ["score.*component", "component.*breakdown", "keyword.*text.*agency", "avg.*keyword.*score"],
+        "template": "SELECT ROUND(AVG(keyword_score), 1) AS avg_keyword, ROUND(AVG(text_score), 1) AS avg_text, ROUND(AVG(agency_score), 1) AS avg_agency FROM researcher_opportunity_matches LIMIT 1",
+        "description": "Match score components",
+    },
+    {
+        "patterns": ["coverage", "opportunity.*match.*percent", "researcher.*match.*percent"],
+        "template": "SELECT ROUND(100.0 * COUNT(DISTINCT rom.opportunity_id) / (SELECT COUNT(*) FROM opportunities), 1) AS opportunity_coverage_pct, ROUND(100.0 * COUNT(DISTINCT rom.researcher_id) / (SELECT COUNT(*) FROM researchers), 1) AS researcher_coverage_pct FROM researcher_opportunity_matches rom WHERE rom.score >= 30 LIMIT 1",
+        "description": "Match coverage analysis",
     },
 ]
 
@@ -423,7 +530,9 @@ class ChatService:
 
         # Format as markdown
         parts = [
-            "You are a SQL assistant for a MariaDB database of federal grant opportunities from Grants.gov.",
+            "You are a SQL assistant for a MariaDB database containing federal grant opportunities from Grants.gov, "
+            "researcher profiles (from CollabNet and VERSO/Esploro), publications, VERSO grants, projects, activities, "
+            "and researcher-opportunity match scores. You can answer questions about any of these data domains.",
             "",
             "## Database Schema",
         ]

@@ -1,0 +1,55 @@
+{% if saved %}
+<div class="alert alert-success alert-dismissible fade show py-2 mb-3" role="alert">
+    <i class="bi bi-check-circle"></i> Embedding settings saved successfully.
+    <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+<form {% if is_admin %}hx-post="/admin/embedding" hx-target="#embedding-settings" hx-swap="innerHTML"{% endif %}>
+    <div class="row">
+        <div class="col-md-4 mb-3">
+            <label class="form-label fw-bold" for="embed-base-url">API Endpoint</label>
+            <input type="url" class="form-control" id="embed-base-url" name="base_url"
+                   value="{{ embed.base_url or '' }}"
+                   placeholder="https://api.example.com/v1"
+                   {{ 'readonly' if not is_admin }}>
+            <div class="form-text">Base URL for the embedding API.</div>
+        </div>
+        <div class="col-md-4 mb-3">
+            <label class="form-label fw-bold" for="embed-model">Model</label>
+            <input type="text" class="form-control" id="embed-model" name="model"
+                   value="{{ embed.model or '' }}"
+                   placeholder="text-embedding-3-small"
+                   {{ 'readonly' if not is_admin }}>
+            <div class="form-text">Model identifier for embeddings.</div>
+        </div>
+        <div class="col-md-4 mb-3">
+            <label class="form-label fw-bold" for="embed-api-key">API Key</label>
+            <div class="input-group">
+                <input type="password" class="form-control api-key-input" id="embed-api-key" name="api_key"
+                       value="{{ embed.api_key or '' }}"
+                       placeholder="sk-..."
+                       {{ 'readonly' if not is_admin }}>
+                <button class="btn btn-outline-secondary" type="button"
+                        onclick="toggleApiKey(this)">
+                    <i class="bi bi-eye"></i>
+                </button>
+            </div>
+            <div class="form-text">API key for authentication.</div>
+        </div>
+    </div>
+    {% if is_admin %}
+    <div class="d-flex align-items-center gap-2">
+        <button type="submit" class="btn btn-navy btn-sm">
+            <i class="bi bi-save"></i> Save Settings
+        </button>
+        <button type="button" class="btn btn-outline-secondary btn-sm"
+                onclick="testEmbeddingConnection()">
+            <i class="bi bi-plug"></i> Test Connection
+        </button>
+        <span id="embed-test-result" class="small"></span>
+    </div>
+    {% else %}
+    <div class="text-muted small"><i class="bi bi-lock"></i> Log in to modify embedding settings</div>
+    {% endif %}
+</form>

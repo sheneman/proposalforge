@@ -12,7 +12,7 @@ from app.database import engine, Base
 from app.services.cache_service import cache_service
 from app.services.sync_service import sync_service
 from app.services.researcher_sync_service import researcher_sync_service
-from app.tasks.scheduler import setup_scheduler
+from app.tasks.scheduler import setup_scheduler, setup_scheduler_from_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
         _is_primary = True
 
     if _is_primary:
-        setup_scheduler()
+        await setup_scheduler_from_db()
         if settings.SYNC_ON_STARTUP:
             asyncio.create_task(sync_service.full_sync())
         if settings.RESEARCHER_SYNC_ON_STARTUP:

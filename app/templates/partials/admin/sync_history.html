@@ -3,6 +3,7 @@
     <table class="table table-sm table-hover mb-0">
         <thead>
             <tr>
+                <th>Source</th>
                 <th>Type</th>
                 <th>Status</th>
                 <th>Started</th>
@@ -15,6 +16,15 @@
         <tbody>
             {% for log in logs %}
             <tr>
+                <td>
+                    {% if log.sync_type in ("full", "incremental", "refresh") %}
+                    <span class="badge bg-primary">Grants.gov</span>
+                    {% elif log.sync_type == "researcher_full" %}
+                    <span class="badge" style="background-color: #0d9488;">CollabNet</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ log.sync_type }}</span>
+                    {% endif %}
+                </td>
                 <td>
                     <span class="badge bg-light text-dark">{{ log.sync_type | title }}</span>
                 </td>
@@ -34,7 +44,7 @@
                     <span class="badge bg-secondary">{{ log.status }}</span>
                     {% endif %}
                 </td>
-                <td class="small">{{ log.started_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="small">{{ log.started_at | tz(tz) }}</td>
                 <td class="small">
                     {% if log.duration_seconds is not none %}
                     {{ log.duration_seconds | round(1) }}s

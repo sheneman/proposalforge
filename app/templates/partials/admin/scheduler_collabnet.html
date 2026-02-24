@@ -1,0 +1,74 @@
+<div class="d-flex align-items-center mb-2">
+    <span class="me-2 fw-bold">Status:</span>
+    {% if enabled %}
+    <span class="badge bg-success">Enabled</span>
+    {% else %}
+    <span class="badge bg-secondary">Paused</span>
+    {% endif %}
+</div>
+<div class="mb-2">
+    <span class="fw-bold">Schedule:</span>
+    {{ day | title }}s at {{ "%02d" | format(hour) }}:{{ "%02d" | format(minute) }} UTC
+</div>
+<div class="mb-3">
+    <span class="fw-bold">Next Run:</span>
+    {% if next_run and enabled %}
+    {{ next_run | tz(tz) }}
+    {% else %}
+    <span class="text-muted">N/A</span>
+    {% endif %}
+</div>
+
+{% if is_admin %}
+<div class="mb-3">
+    <label class="form-label fw-bold">Toggle Scheduler</label>
+    <div>
+        <button class="btn btn-sm {{ 'btn-warning' if enabled else 'btn-success' }}"
+                hx-post="/admin/scheduler/collabnet/toggle"
+                hx-target="#scheduler-collabnet"
+                hx-swap="innerHTML">
+            {% if enabled %}
+            <i class="bi bi-pause-circle"></i> Pause
+            {% else %}
+            <i class="bi bi-play-circle"></i> Resume
+            {% endif %}
+        </button>
+    </div>
+</div>
+
+<form hx-post="/admin/scheduler/collabnet/schedule"
+      hx-target="#scheduler-collabnet"
+      hx-swap="innerHTML">
+    <label class="form-label fw-bold">Change Schedule</label>
+    <div class="row g-2 mb-2">
+        <div class="col">
+            <select name="day" class="form-select form-select-sm">
+                {% for d in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] %}
+                <option value="{{ d }}" {{ 'selected' if day == d }}>{{ d | title }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
+            <select name="hour" class="form-select form-select-sm">
+                {% for h in range(24) %}
+                <option value="{{ h }}" {{ 'selected' if hour == h }}>{{ "%02d" | format(h) }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto d-flex align-items-center fw-bold">:</div>
+        <div class="col">
+            <select name="minute" class="form-select form-select-sm">
+                {% for m in range(0, 60, 5) %}
+                <option value="{{ m }}" {{ 'selected' if minute == m }}>{{ "%02d" | format(m) }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto d-flex align-items-center small text-muted">UTC</div>
+    </div>
+    <button type="submit" class="btn btn-sm btn-primary">
+        <i class="bi bi-save"></i> Update Schedule
+    </button>
+</form>
+{% else %}
+<div class="text-muted small"><i class="bi bi-lock"></i> Log in to manage the scheduler</div>
+{% endif %}

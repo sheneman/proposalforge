@@ -6,27 +6,86 @@
 <div class="row mb-4">
     <div class="col">
         <h2><i class="bi bi-gear-fill"></i> Admin Panel</h2>
-        <p class="text-muted mb-0">Monitor and control data harvesting from Grants.gov</p>
+        <p class="text-muted mb-0">Monitor and control data sources, scheduling, and model endpoints</p>
     </div>
 </div>
 
-<!-- Section A: Live Sync Status -->
+<!-- Section 1: Data Sources (side-by-side) -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-navy text-white">
-        <i class="bi bi-activity"></i> Live Sync Status
+        <i class="bi bi-database"></i> Data Sources
     </div>
-    <div class="card-body" id="sync-live"
-         hx-get="/admin/sync/live"
-         hx-trigger="load, every 2s"
-         hx-swap="innerHTML">
-        <div class="text-center py-3">
-            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-            <span class="text-muted ms-2">Loading...</span>
+    <div class="card-body">
+        <div class="row">
+            <!-- Grants.gov -->
+            <div class="col-md-6 mb-3 mb-md-0">
+                <div class="card h-100">
+                    <div class="card-header bg-light fw-bold">
+                        <i class="bi bi-building"></i> Grants.gov
+                    </div>
+                    <div class="card-body">
+                        <!-- Sync status -->
+                        <div id="sync-live"
+                             hx-get="/admin/sync/live"
+                             hx-trigger="load, every 2s"
+                             hx-swap="innerHTML">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                                <span class="text-muted ms-2">Loading...</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <!-- Data health -->
+                        <h6 class="text-muted mb-2"><i class="bi bi-heart-pulse"></i> Data Health</h6>
+                        <div id="data-health-grants"
+                             hx-get="/admin/data/health/grants"
+                             hx-trigger="load, every 60s"
+                             hx-swap="innerHTML">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                                <span class="text-muted ms-2">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- CollabNet -->
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-header bg-light fw-bold">
+                        <i class="bi bi-people"></i> CollabNet
+                    </div>
+                    <div class="card-body">
+                        <!-- Sync status -->
+                        <div id="researcher-sync-live"
+                             hx-get="/admin/researcher-sync/live"
+                             hx-trigger="load, every 3s"
+                             hx-swap="innerHTML">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                                <span class="text-muted ms-2">Loading...</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <!-- Data health -->
+                        <h6 class="text-muted mb-2"><i class="bi bi-heart-pulse"></i> Data Health</h6>
+                        <div id="data-health-collabnet"
+                             hx-get="/admin/data/health/collabnet"
+                             hx-trigger="load, every 60s"
+                             hx-swap="innerHTML">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                                <span class="text-muted ms-2">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- Section B: Sync History -->
+<!-- Section 2: Sync History -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-navy text-white">
         <i class="bi bi-clock-history"></i> Sync History
@@ -42,61 +101,107 @@
     </div>
 </div>
 
-<!-- Section C: Data Health -->
+<!-- Section 3: Scheduling (side-by-side) -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-navy text-white">
-        <i class="bi bi-heart-pulse"></i> Data Health
+        <i class="bi bi-calendar-check"></i> Scheduling
     </div>
-    <div class="card-body" id="data-health"
-         hx-get="/admin/data/health"
-         hx-trigger="load, every 60s"
-         hx-swap="innerHTML">
-        <div class="text-center py-3">
-            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-            <span class="text-muted ms-2">Loading...</span>
+    <div class="card-body">
+        <div class="row">
+            <!-- Grants.gov Scheduler -->
+            <div class="col-md-6 mb-3 mb-md-0">
+                <div class="card h-100">
+                    <div class="card-header bg-light fw-bold">
+                        <i class="bi bi-building"></i> Grants.gov
+                    </div>
+                    <div class="card-body" id="scheduler-grants"
+                         hx-get="/admin/scheduler/grants"
+                         hx-trigger="load"
+                         hx-swap="innerHTML">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                            <span class="text-muted ms-2">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- CollabNet Scheduler -->
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-header bg-light fw-bold">
+                        <i class="bi bi-people"></i> CollabNet
+                    </div>
+                    <div class="card-body" id="scheduler-collabnet"
+                         hx-get="/admin/scheduler/collabnet"
+                         hx-trigger="load"
+                         hx-swap="innerHTML">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                            <span class="text-muted ms-2">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- Section D: Scheduler Control -->
+<!-- Section 4: Model Endpoints -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-navy text-white">
-        <i class="bi bi-calendar-check"></i> Scheduler Control
+        <i class="bi bi-robot"></i> Model Endpoints
     </div>
-    <div class="card-body" id="scheduler"
-         hx-get="/admin/scheduler"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-        <div class="text-center py-3">
-            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-            <span class="text-muted ms-2">Loading...</span>
+    <div class="card-body">
+        <!-- LLM Backend -->
+        <h6 class="fw-bold mb-3"><i class="bi bi-chat-dots"></i> LLM Backend</h6>
+        <div id="llm-settings"
+             hx-get="/admin/llm"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="text-center py-3">
+                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                <span class="text-muted ms-2">Loading...</span>
+            </div>
+        </div>
+
+        <hr>
+
+        <!-- Embedding Endpoint -->
+        <h6 class="fw-bold mb-3"><i class="bi bi-vector-pen"></i> Embedding Endpoint</h6>
+        <div id="embedding-settings"
+             hx-get="/admin/embedding"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="text-center py-3">
+                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                <span class="text-muted ms-2">Loading...</span>
+            </div>
+        </div>
+
+        <hr>
+
+        <!-- Re-ranker Endpoint -->
+        <h6 class="fw-bold mb-3"><i class="bi bi-sort-numeric-down"></i> Re-ranker Endpoint</h6>
+        <div id="reranker-settings"
+             hx-get="/admin/reranker"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="text-center py-3">
+                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                <span class="text-muted ms-2">Loading...</span>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- Section E: LLM Backend -->
+<!-- Section 5: App Settings -->
 <div class="card shadow-sm mb-4">
     <div class="card-header bg-navy text-white">
-        <i class="bi bi-robot"></i> LLM Backend
+        <i class="bi bi-sliders"></i> App Settings
     </div>
-    <div class="card-body" id="llm-settings"
-         hx-get="/admin/llm"
+    <div class="card-body" id="app-settings"
+         hx-get="/admin/settings"
          hx-trigger="load"
-         hx-swap="innerHTML">
-        <div class="text-center py-3">
-            <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-            <span class="text-muted ms-2">Loading...</span>
-        </div>
-    </div>
-</div>
-<!-- Section F: Researcher Data -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-navy text-white">
-        <i class="bi bi-people"></i> Researcher Data (CollabNet)
-    </div>
-    <div class="card-body" id="researcher-sync-live"
-         hx-get="/admin/researcher-sync/live"
-         hx-trigger="load, every 3s"
          hx-swap="innerHTML">
         <div class="text-center py-3">
             <div class="spinner-border spinner-border-sm text-muted" role="status"></div>

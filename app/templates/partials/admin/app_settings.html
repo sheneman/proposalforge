@@ -1,0 +1,28 @@
+{% if saved %}
+<div class="alert alert-success alert-dismissible fade show py-2 mb-3" role="alert">
+    <i class="bi bi-check-circle"></i> Settings saved successfully.
+    <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+<form {% if is_admin %}hx-post="/admin/settings" hx-target="#app-settings" hx-swap="innerHTML"{% endif %}>
+    <div class="row">
+        <div class="col-md-4 mb-3">
+            <label class="form-label fw-bold" for="app-timezone">Display Timezone</label>
+            <select class="form-select" id="app-timezone" name="timezone"
+                    {{ 'disabled' if not is_admin }}>
+                {% for tz_choice in timezone_choices %}
+                <option value="{{ tz_choice }}" {{ 'selected' if timezone == tz_choice }}>{{ tz_choice }}</option>
+                {% endfor %}
+            </select>
+            <div class="form-text">All timestamps in the admin panel will display in this timezone.</div>
+        </div>
+    </div>
+    {% if is_admin %}
+    <button type="submit" class="btn btn-navy btn-sm">
+        <i class="bi bi-save"></i> Save Settings
+    </button>
+    {% else %}
+    <div class="text-muted small"><i class="bi bi-lock"></i> Log in to modify settings</div>
+    {% endif %}
+</form>

@@ -79,7 +79,7 @@
     <span class="text-muted">Last sync failed: {{ stats.get("error", "")[:100] }}</span>
     {% elif last_sync %}
     <span class="badge bg-success fs-6 me-3">Idle</span>
-    <span class="text-muted">Last sync: {{ last_sync.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+    <span class="text-muted">Last sync: {{ last_sync | tz(tz) }}</span>
     {% else %}
     <span class="badge bg-secondary fs-6 me-3">Idle</span>
     <span class="text-muted">No researcher sync has been run yet</span>

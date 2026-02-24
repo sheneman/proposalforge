@@ -81,8 +81,8 @@ class MCPManager:
                 "slug": "web_crawl",
                 "name": "Web Crawl / Fetch",
                 "transport": "stdio",
-                "command": "uvx",
-                "args": json.dumps(["mcp-server-fetch"]),
+                "command": "uv",
+                "args": json.dumps(["tool", "run", "mcp-server-fetch"]),
                 "enabled": False,
             },
         ]
@@ -96,9 +96,11 @@ class MCPManager:
             else:
                 # Fix known bad package names from earlier seeds
                 current_args = existing.args or ""
+                current_cmd = existing.command or ""
                 needs_update = (
                     "@modelcontextprotocol/server-mysql" in current_args
                     or "@modelcontextprotocol/server-fetch" in current_args
+                    or (existing.slug == "web_crawl" and current_cmd == "uvx")
                 )
                 if needs_update:
                     existing.command = d.get("command", existing.command)

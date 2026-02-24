@@ -8,10 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, async_session
 from app.services.cache_service import cache_service
 from app.services.sync_service import sync_service
 from app.services.researcher_sync_service import researcher_sync_service
+from app.services.agent_service import agent_service
+from app.services.mcp_manager import mcp_manager
+from app.services.workflow_service import workflow_service
 from app.tasks.scheduler import setup_scheduler, setup_scheduler_from_db
 
 logging.basicConfig(
@@ -34,6 +37,16 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
+
+    # Sync agent definitions from AGENT.md files and seed defaults
+    try:
+        async with async_session() as session:
+            await agent_service.sync_from_files(session)
+            await mcp_manager.seed_defaults(session)
+            await workflow_service.seed_workflows(session)
+        logger.info("Agent definitions and MCP servers synced")
+    except Exception:
+        logger.exception("Failed to sync agent definitions (non-fatal)")
 
     # Clean up any orphaned "running" sync logs from prior crashes/restarts
     await sync_service._mark_stale_syncs()
@@ -115,6 +128,7 @@ from app.api.admin import router as admin_router
 from app.api.analytics import router as analytics_router
 from app.api.researchers import router as researchers_router
 from app.api.matches import router as matches_router
+from app.api.agents import router as agents_router
 
 app.include_router(pages_router)
 app.include_router(search_router)
@@ -124,3 +138,4 @@ app.include_router(admin_router)
 app.include_router(analytics_router)
 app.include_router(researchers_router)
 app.include_router(matches_router)
+app.include_router(agents_router)

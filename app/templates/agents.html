@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+
+{% block title %}Agents - ProposalForge{% endblock %}
+
+{% block extra_head %}
+<style>
+    .agent-card { transition: all 0.2s; border-left: 4px solid var(--navy); }
+    .agent-card.disabled { border-left-color: #ccc; opacity: 0.7; }
+    .agent-card:hover { box-shadow: 0 0.25rem 0.5rem rgba(0,0,0,0.1); }
+    .system-prompt-editor { font-family: monospace; font-size: 0.85rem; min-height: 200px; }
+    .workflow-diagram { background: #f8f9fa; border-radius: 0.5rem; padding: 1rem; font-family: monospace; }
+    .step-badge { font-size: 0.75rem; }
+    .run-row:hover { background-color: rgba(26, 54, 93, 0.05); }
+    .mcp-card { border-left: 4px solid var(--gold); }
+    .node-box { display: inline-block; padding: 4px 12px; border-radius: 4px; margin: 2px 4px; font-size: 0.85rem; }
+    .node-llm { background: #e3f2fd; border: 1px solid #90caf9; }
+    .node-python { background: #f3e5f5; border: 1px solid #ce93d8; }
+    .node-conditional { background: #fff3e0; border: 1px solid #ffb74d; }
+    #run-detail-panel { display: none; }
+    .progress-phase { font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="mb-0"><i class="bi bi-cpu"></i> Agents</h4>
+        <div>
+            {% if is_admin %}
+            <button class="btn btn-sm btn-navy" onclick="startMatchmaking()" id="btn-start-matching"
+                {% if is_running %}disabled{% endif %}>
+                <i class="bi bi-play-fill"></i> Run Matchmaking
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Sub-tabs -->
+    <ul class="nav nav-pills mb-3" id="agents-tabs">
+        <li class="nav-item">
+            <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-dashboard">
+                <i class="bi bi-speedometer2"></i> Dashboard
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-config">
+                <i class="bi bi-gear"></i> Agent Configuration
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-runs">
+                <i class="bi bi-list-task"></i> Workflow Runs
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-mcp">
+                <i class="bi bi-plug"></i> MCP Servers
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+
+        <!-- ═══ Dashboard Tab ═══ -->
+        <div class="tab-pane fade show active" id="tab-dashboard">
+            <!-- Workflow Diagram -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-navy text-white">
+                    <i class="bi bi-diagram-3"></i> Matchmaking Workflow
+                </div>
+                <div class="card-body">
+                    <div class="workflow-diagram text-center">
+                        <span class="node-box node-llm">Plan</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-llm">Discover</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-python">Pre-Filter (TF-IDF)</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-llm">Match</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-llm">Critique</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-conditional">Revise?</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-llm">Summarize</span>
+                        <i class="bi bi-arrow-right"></i>
+                        <span class="node-box node-python">Persist</span>
+                    </div>
+                    <div class="text-center mt-2 text-muted small">
+                        <span class="node-box node-llm">LLM Agent</span>
+                        <span class="node-box node-python">Python</span>
+                        <span class="node-box node-conditional">Conditional</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent Status Cards -->
+            <div class="row">
+                {% for agent in agents %}
+                <div class="col-md-3 mb-3">
+                    <div class="card agent-card shadow-sm {% if not agent.enabled %}disabled{% endif %}">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <h6 class="card-title mb-1">{{ agent.name }}</h6>
+                                {% if agent.enabled %}
+                                <span class="badge bg-success">Active</span>
+                                {% else %}
+                                <span class="badge bg-secondary">Disabled</span>
+                                {% endif %}
+                            </div>
+                            <p class="text-muted small mb-2">{{ agent.description[:80] }}{% if agent.description|length > 80 %}...{% endif %}</p>
+                            <div class="small">
+                                <i class="bi bi-cpu"></i>
+                                <span class="text-muted">{{ agent.llm_model or 'Global default' }}</span>
+                            </div>
+                            {% if agent.mcp_server_slugs %}
+                            <div class="small mt-1">
+                                <i class="bi bi-plug"></i>
+                                {% for s in agent.mcp_server_slugs %}
+                                <span class="badge bg-light text-dark">{{ s }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Live Progress (shown during runs) -->
+            <div class="card shadow-sm mb-3" id="live-progress-card" style="display:none">
+                <div class="card-header bg-primary text-white">
+                    <i class="bi bi-hourglass-split"></i> Workflow in Progress
+                </div>
+                <div class="card-body">
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
+                        <span class="progress-phase" id="progress-phase">Initializing...</span>
+                    </div>
+                    <div class="progress mb-2" style="height: 8px;">
+                        <div class="progress-bar bg-navy" id="progress-bar" style="width: 0%"></div>
+                    </div>
+                    <div class="text-muted small" id="progress-details"></div>
+                    {% if is_admin %}
+                    <button class="btn btn-sm btn-outline-danger mt-2" onclick="cancelRun()" id="btn-cancel">
+                        <i class="bi bi-x-circle"></i> Cancel
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ Agent Configuration Tab ═══ -->
+        <div class="tab-pane fade" id="tab-config">
+            <div class="accordion" id="agent-accordion">
+                {% for agent in agents %}
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#agent-{{ agent.slug }}">
+                            <span class="me-2">
+                                {% if agent.enabled %}
+                                <i class="bi bi-check-circle-fill text-success"></i>
+                                {% else %}
+                                <i class="bi bi-x-circle text-muted"></i>
+                                {% endif %}
+                            </span>
+                            <strong>{{ agent.name }}</strong>
+                            <span class="text-muted ms-2 small">({{ agent.slug }})</span>
+                        </button>
+                    </h2>
+                    <div id="agent-{{ agent.slug }}" class="accordion-collapse collapse"
+                        data-bs-parent="#agent-accordion">
+                        <div class="accordion-body">
+                            <form class="agent-config-form" data-slug="{{ agent.slug }}">
+                                <div class="row">
+                                    <!-- Left: Settings -->
+                                    <div class="col-md-4">
+                                        <div class="mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="enabled-{{ agent.slug }}"
+                                                    {% if agent.enabled %}checked{% endif %}>
+                                                <label class="form-check-label" for="enabled-{{ agent.slug }}">Enabled</label>
+                                            </div>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">LLM Base URL (override)</label>
+                                            <input type="text" class="form-control form-control-sm"
+                                                name="llm_base_url" value="{{ agent.llm_base_url or '' }}"
+                                                placeholder="Use global default">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">LLM Model (override)</label>
+                                            <input type="text" class="form-control form-control-sm"
+                                                name="llm_model" value="{{ agent.llm_model or '' }}"
+                                                placeholder="Use global default">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">API Key (override)</label>
+                                            <input type="password" class="form-control form-control-sm"
+                                                name="llm_api_key" value=""
+                                                placeholder="{% if agent.llm_api_key %}(set){% else %}Use global default{% endif %}">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">Temperature: <span id="temp-val-{{ agent.slug }}">{{ agent.temperature }}</span></label>
+                                            <input type="range" class="form-range" name="temperature"
+                                                min="0" max="1" step="0.1" value="{{ agent.temperature }}"
+                                                oninput="document.getElementById('temp-val-{{ agent.slug }}').textContent = this.value">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">Max Tokens</label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                name="max_tokens" value="{{ agent.max_tokens }}" min="256" max="32768">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">MCP Servers</label>
+                                            {% for srv in mcp_servers %}
+                                            <div class="form-check">
+                                                <input class="form-check-input mcp-check" type="checkbox"
+                                                    value="{{ srv.slug }}" id="mcp-{{ agent.slug }}-{{ srv.slug }}"
+                                                    {% if srv.slug in agent.mcp_server_slugs %}checked{% endif %}>
+                                                <label class="form-check-label small" for="mcp-{{ agent.slug }}-{{ srv.slug }}">
+                                                    {{ srv.name }}
+                                                </label>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+
+                                    <!-- Right: System Prompt -->
+                                    <div class="col-md-8">
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">Persona</label>
+                                            <input type="text" class="form-control form-control-sm"
+                                                name="persona" value="{{ agent.persona or '' }}">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label small fw-semibold">System Prompt</label>
+                                            <textarea class="form-control system-prompt-editor"
+                                                name="system_prompt" rows="12">{{ agent.system_prompt or '' }}</textarea>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {% if is_admin %}
+                                <div class="d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-navy" onclick="saveAgent('{{ agent.slug }}')">
+                                        <i class="bi bi-check-lg"></i> Save
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="testAgent('{{ agent.slug }}')">
+                                        <i class="bi bi-lightning"></i> Test
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetAgent('{{ agent.slug }}')">
+                                        <i class="bi bi-arrow-counterclockwise"></i> Reset to Defaults
+                                    </button>
+                                </div>
+                                {% endif %}
+
+                                <div class="mt-2" id="agent-result-{{ agent.slug }}"></div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- ═══ Workflow Runs Tab ═══ -->
+        <div class="tab-pane fade" id="tab-runs">
+            <div class="row">
+                <div class="col-md-7">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-navy text-white d-flex justify-content-between">
+                            <span><i class="bi bi-list-task"></i> Workflow Runs</span>
+                            <button class="btn btn-sm btn-outline-light" onclick="refreshRuns()">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Status</th>
+                                            <th>Trigger</th>
+                                            <th>Started</th>
+                                            <th>Completed</th>
+                                            <th>Matches</th>
+                                            <th>Error</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="runs-table-body">
+                                        {% for run in runs %}
+                                        <tr class="run-row" style="cursor:pointer" onclick="loadRunDetail({{ run.id }})">
+                                            <td>{{ run.id }}</td>
+                                            <td>
+                                                {% if run.status == 'running' %}
+                                                <span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1"></span>Running</span>
+                                                {% elif run.status == 'completed' %}
+                                                <span class="badge bg-success">Completed</span>
+                                                {% elif run.status == 'failed' %}
+                                                <span class="badge bg-danger">Failed</span>
+                                                {% elif run.status == 'cancelled' %}
+                                                <span class="badge bg-warning">Cancelled</span>
+                                                {% else %}
+                                                <span class="badge bg-secondary">{{ run.status }}</span>
+                                                {% endif %}
+                                            </td>
+                                            <td>{{ run.trigger }}</td>
+                                            <td class="small">{{ run.started_at or '-' }}</td>
+                                            <td class="small">{{ run.completed_at or '-' }}</td>
+                                            <td>{{ run.output_summary.matches_produced if run.output_summary else '-' }}</td>
+                                            <td class="small text-danger">{{ (run.error_message or '')[:50] }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                        {% if not runs %}
+                                        <tr><td colspan="7" class="text-center text-muted py-3">No workflow runs yet</td></tr>
+                                        {% endif %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Run Detail Panel -->
+                <div class="col-md-5" id="run-detail-panel">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-navy text-white">
+                            <i class="bi bi-info-circle"></i> Run Detail
+                            <button class="btn btn-sm btn-outline-light float-end" onclick="closeRunDetail()">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                        <div class="card-body" id="run-detail-content">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ MCP Servers Tab ═══ -->
+        <div class="tab-pane fade" id="tab-mcp">
+            <div class="row">
+                {% for srv in mcp_servers %}
+                <div class="col-md-6 mb-3">
+                    <div class="card mcp-card shadow-sm">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <h6 class="mb-0">{{ srv.name }}</h6>
+                                {% if srv.enabled %}
+                                <span class="badge bg-success">Enabled</span>
+                                {% else %}
+                                <span class="badge bg-secondary">Disabled</span>
+                                {% endif %}
+                            </div>
+                            <p class="small text-muted mb-2">Slug: <code>{{ srv.slug }}</code> | Transport: <code>{{ srv.transport }}</code></p>
+
+                            {% if srv.command %}
+                            <div class="small mb-1"><strong>Command:</strong> <code>{{ srv.command }} {{ srv.args|join(' ') }}</code></div>
+                            {% endif %}
+                            {% if srv.url %}
+                            <div class="small mb-1"><strong>URL:</strong> <code>{{ srv.url }}</code></div>
+                            {% endif %}
+
+                            {% if is_admin %}
+                            <div class="mt-2">
+                                <button class="btn btn-sm btn-outline-primary" onclick="testMCPServer('{{ srv.slug }}')">
+                                    <i class="bi bi-lightning"></i> Test Connection
+                                </button>
+                            </div>
+                            <div class="mt-1" id="mcp-result-{{ srv.slug }}"></div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+                {% if not mcp_servers %}
+                <div class="col-12 text-center text-muted py-4">
+                    No MCP servers configured. They will be seeded on next restart.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/agents.js?v=0.1.0"></script>
+{% endblock %}

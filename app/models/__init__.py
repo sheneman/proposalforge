@@ -25,6 +25,14 @@ from app.models.researcher import (
     ResearcherActivity,
     ResearcherOpportunityMatch,
 )
+from app.models.agent import (
+    Agent,
+    MCPServer,
+    Workflow,
+    WorkflowRun,
+    WorkflowStep,
+    AgentMatch,
+)
 
 __all__ = [
     "Agency",
@@ -50,4 +58,10 @@ __all__ = [
     "Activity",
     "ResearcherActivity",
     "ResearcherOpportunityMatch",
+    "Agent",
+    "MCPServer",
+    "Workflow",
+    "WorkflowRun",
+    "WorkflowStep",
+    "AgentMatch",
 ]

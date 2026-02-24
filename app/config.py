@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     COLLABNET_API_KEY: str = ""
     RESEARCHER_SYNC_ON_STARTUP: bool = False
 
+    # VERSO/Esploro API (grants, projects, activities)
+    VERSO_API_URL: str = "https://api-na.hosted.exlibrisgroup.com/esploro/v1"
+    VERSO_API_KEY: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"

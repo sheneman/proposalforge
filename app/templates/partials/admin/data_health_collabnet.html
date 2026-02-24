@@ -25,7 +25,7 @@
     </div>
 </div>
 
-<div class="row g-2">
+<div class="row g-2 mb-3">
     <div class="col-6 col-lg-3">
         <div class="card border-0 bg-light text-center py-2">
             <div class="fs-5 fw-bold text-navy">{{ "{:,}".format(total_publications) }}</div>
@@ -48,6 +48,33 @@
         <div class="card border-0 bg-light text-center py-2">
             <div class="fs-5 fw-bold text-navy">{{ "{:,}".format(total_education) }}</div>
             <small class="text-muted">Education Records</small>
+        </div>
+    </div>
+</div>
+
+<div class="row g-2">
+    <div class="col-6 col-lg-3">
+        <div class="card border-0 bg-light text-center py-2">
+            <div class="fs-5 fw-bold" style="color: var(--gold);">{{ "{:,}".format(total_grants) }}</div>
+            <small class="text-muted">Grants (VERSO)</small>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card border-0 bg-light text-center py-2">
+            <div class="fs-5 fw-bold" style="color: var(--gold);">{{ "{:,}".format(total_projects) }}</div>
+            <small class="text-muted">Projects (VERSO)</small>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card border-0 bg-light text-center py-2">
+            <div class="fs-5 fw-bold" style="color: var(--gold);">{{ "{:,}".format(total_activities) }}</div>
+            <small class="text-muted">Activities (VERSO)</small>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card border-0 bg-light text-center py-2">
+            <div class="fs-5 fw-bold" style="color: var(--gold);">{{ "{:,}".format(total_identifiers) }}</div>
+            <small class="text-muted">Identifiers (VERSO)</small>
         </div>
     </div>
 </div>

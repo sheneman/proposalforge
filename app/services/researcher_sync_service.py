@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,11 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session
 from app.models.researcher import (
     Researcher, ResearcherKeyword, ResearcherAffiliation,
-    ResearcherEducation, Publication, ResearcherPublication,
+    ResearcherEducation, ResearcherIdentifier,
+    Publication, ResearcherPublication,
+    Grant, ResearcherGrant,
+    Project, ResearcherProject,
+    Activity, ResearcherActivity,
 )
 from app.models.sync_log import SyncLog
 from app.services.collabnet_client import collabnet_client
+from app.services.verso_client import verso_client
 from app.services.cache_service import cache_service
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,30 @@ def _extract_contact(contacts: list | None, contact_type: str) -> str | None:
             if ct == contact_type:
                 return c.get("value") or c.get("contact_value")
     return None
+
+
+def _parse_date(val) -> date | None:
+    """Try to parse a date from various formats."""
+    if not val:
+        return None
+    if isinstance(val, date):
+        return val
+    s = str(val).strip()[:10]
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _parse_decimal(val) -> Decimal | None:
+    if val is None:
+        return None
+    try:
+        return Decimal(str(val))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 class ResearcherSyncService:
@@ -290,6 +321,15 @@ class ResearcherSyncService:
             else:
                 kw_text = str(kw) if kw else None
 
+            # Contributing faculty — array to comma-separated
+            contrib_faculty = data.get("contributing_faculty") or []
+            if isinstance(contrib_faculty, list):
+                contrib_text = ", ".join(str(f) for f in contrib_faculty if f)
+            elif isinstance(contrib_faculty, str):
+                contrib_text = contrib_faculty
+            else:
+                contrib_text = None
+
             values = dict(
                 collabnet_id=collabnet_id,
                 title=title,
@@ -301,6 +341,9 @@ class ResearcherSyncService:
                 publication_date=str(data.get("publication_date") or data.get("date") or "")[:50] or None,
                 publication_info=data.get("publication_info") or data.get("publicationInfo") or data.get("journal"),
                 affiliation=data.get("affiliation") or data.get("department"),
+                open_access=data.get("open_access_indicator") or data.get("open_access"),
+                file_download_url=data.get("file_download_url"),
+                contributing_faculty=contrib_text or None,
             )
 
             if pub:
@@ -337,7 +380,7 @@ class ResearcherSyncService:
             return None
 
     async def _apply_summaries(self, session: AsyncSession, summaries: list[dict]) -> int:
-        """Match summaries to researchers and update ai_summary field."""
+        """Match summaries to researchers and update ai_summary fields (decomposed + concatenated)."""
         matched = 0
         for summary in summaries:
             try:
@@ -376,19 +419,39 @@ class ResearcherSyncService:
                         researcher = result.scalar_one_or_none()
 
                 if researcher:
-                    # Extract summary text from nested ai_summaries structure
-                    raw_summary = ""
+                    # Extract individual summary sections and concatenated text
                     ai_summaries = summary.get("ai_summaries")
+                    themes_text = None
+                    methods_text = None
+                    impacts_text = None
+                    collabs_text = None
+                    raw_summary = ""
+
                     if isinstance(ai_summaries, dict):
-                        # Concatenate responses from all sections (main_themes, methods, etc.)
                         parts = []
-                        for section_key in ("main_themes", "methods", "impacts", "collaborations"):
+                        for section_key, attr_name in (
+                            ("main_themes", "themes"),
+                            ("methods", "methods"),
+                            ("impacts", "impacts"),
+                            ("collaborations", "collabs"),
+                        ):
                             section = ai_summaries.get(section_key)
                             if isinstance(section, dict):
                                 resp = section.get("response", "")
                                 if resp:
-                                    parts.append(_strip_html(resp))
+                                    cleaned = _strip_html(resp)
+                                    if cleaned:
+                                        parts.append(cleaned)
+                                        if attr_name == "themes":
+                                            themes_text = cleaned
+                                        elif attr_name == "methods":
+                                            methods_text = cleaned
+                                        elif attr_name == "impacts":
+                                            impacts_text = cleaned
+                                        elif attr_name == "collabs":
+                                            collabs_text = cleaned
                         raw_summary = "\n\n".join(p for p in parts if p)
+
                     # Fall back to flat fields
                     if not raw_summary:
                         raw_summary = summary.get("summary") or summary.get("text") or summary.get("content") or ""
@@ -396,6 +459,10 @@ class ResearcherSyncService:
 
                     if raw_summary:
                         researcher.ai_summary = raw_summary
+                        researcher.ai_summary_themes = themes_text
+                        researcher.ai_summary_methods = methods_text
+                        researcher.ai_summary_impacts = impacts_text
+                        researcher.ai_summary_collabs = collabs_text
                         matched += 1
 
             except Exception as e:
@@ -403,6 +470,376 @@ class ResearcherSyncService:
                 continue
 
         return matched
+
+    # ------------------------------------------------------------------
+    # VERSO sync helpers
+    # ------------------------------------------------------------------
+
+    async def _upsert_grant(self, session: AsyncSession, data: dict) -> Grant | None:
+        """Upsert a grant from VERSO API data."""
+        try:
+            verso_id = str(data.get("id") or data.get("grant_id") or data.get("mms_id") or "")
+            if not verso_id:
+                return None
+
+            stmt = select(Grant).where(Grant.verso_id == verso_id)
+            result = await session.execute(stmt)
+            grant = result.scalar_one_or_none()
+
+            title = data.get("title") or data.get("grant_title") or ""
+            if isinstance(title, list):
+                title = title[0] if title else ""
+            title = str(title)[:1000] or None
+
+            # Funder info
+            funder = data.get("funder") or data.get("funder_name") or data.get("sponsor") or ""
+            if isinstance(funder, dict):
+                funder = funder.get("name") or funder.get("value") or ""
+
+            values = dict(
+                verso_id=verso_id,
+                title=title,
+                description=data.get("description") or data.get("abstract"),
+                funder=str(funder)[:500] if funder else None,
+                funder_id=str(data.get("funder_id") or data.get("sponsor_id") or "")[:100] or None,
+                grant_number=str(data.get("grant_number") or data.get("award_number") or "")[:255] or None,
+                status=str(data.get("status") or "")[:50] or None,
+                start_date=_parse_date(data.get("start_date") or data.get("begin_date")),
+                end_date=_parse_date(data.get("end_date")),
+                amount=_parse_decimal(data.get("amount") or data.get("total_amount") or data.get("award_amount")),
+                currency=str(data.get("currency") or data.get("currency_code") or "")[:10] or None,
+            )
+
+            if grant:
+                for k, v in values.items():
+                    setattr(grant, k, v)
+            else:
+                grant = Grant(**values)
+                session.add(grant)
+
+            await session.flush()
+            return grant
+        except Exception as e:
+            logger.error(f"Error upserting grant: {e}", exc_info=True)
+            return None
+
+    async def _link_grant_to_researcher(
+        self, session: AsyncSession, grant_id: int, researcher_id: int, role: str | None = None
+    ):
+        """Create researcher<->grant link if not exists."""
+        existing = await session.execute(
+            text("SELECT id FROM researcher_grants WHERE researcher_id = :rid AND grant_id = :gid"),
+            {"rid": researcher_id, "gid": grant_id},
+        )
+        if not existing.first():
+            session.add(ResearcherGrant(researcher_id=researcher_id, grant_id=grant_id, role=role))
+
+    async def _upsert_project(self, session: AsyncSession, data: dict) -> Project | None:
+        """Upsert a project from VERSO API data."""
+        try:
+            verso_id = str(data.get("id") or data.get("project_id") or data.get("mms_id") or "")
+            if not verso_id:
+                return None
+
+            stmt = select(Project).where(Project.verso_id == verso_id)
+            result = await session.execute(stmt)
+            project = result.scalar_one_or_none()
+
+            title = data.get("title") or data.get("project_title") or ""
+            if isinstance(title, list):
+                title = title[0] if title else ""
+            title = str(title)[:1000] or None
+
+            values = dict(
+                verso_id=verso_id,
+                title=title,
+                description=data.get("description") or data.get("abstract"),
+                status=str(data.get("status") or "")[:50] or None,
+                start_date=_parse_date(data.get("start_date") or data.get("begin_date")),
+                end_date=_parse_date(data.get("end_date")),
+            )
+
+            if project:
+                for k, v in values.items():
+                    setattr(project, k, v)
+            else:
+                project = Project(**values)
+                session.add(project)
+
+            await session.flush()
+            return project
+        except Exception as e:
+            logger.error(f"Error upserting project: {e}", exc_info=True)
+            return None
+
+    async def _link_project_to_researcher(
+        self, session: AsyncSession, project_id: int, researcher_id: int, role: str | None = None
+    ):
+        existing = await session.execute(
+            text("SELECT id FROM researcher_projects WHERE researcher_id = :rid AND project_id = :pid"),
+            {"rid": researcher_id, "pid": project_id},
+        )
+        if not existing.first():
+            session.add(ResearcherProject(researcher_id=researcher_id, project_id=project_id, role=role))
+
+    async def _upsert_activity(self, session: AsyncSession, data: dict) -> Activity | None:
+        """Upsert an activity from VERSO API data."""
+        try:
+            verso_id = str(data.get("id") or data.get("activity_id") or data.get("mms_id") or "")
+            if not verso_id:
+                return None
+
+            stmt = select(Activity).where(Activity.verso_id == verso_id)
+            result = await session.execute(stmt)
+            activity = result.scalar_one_or_none()
+
+            title = data.get("title") or data.get("activity_title") or ""
+            if isinstance(title, list):
+                title = title[0] if title else ""
+            title = str(title)[:1000] or None
+
+            values = dict(
+                verso_id=verso_id,
+                title=title,
+                activity_type=str(data.get("type") or data.get("activity_type") or "")[:100] or None,
+                description=data.get("description") or data.get("abstract"),
+                date=_parse_date(data.get("date") or data.get("start_date") or data.get("activity_date")),
+                location=str(data.get("location") or data.get("venue") or "")[:500] or None,
+            )
+
+            if activity:
+                for k, v in values.items():
+                    setattr(activity, k, v)
+            else:
+                activity = Activity(**values)
+                session.add(activity)
+
+            await session.flush()
+            return activity
+        except Exception as e:
+            logger.error(f"Error upserting activity: {e}", exc_info=True)
+            return None
+
+    async def _link_activity_to_researcher(
+        self, session: AsyncSession, activity_id: int, researcher_id: int, role: str | None = None
+    ):
+        existing = await session.execute(
+            text("SELECT id FROM researcher_activities WHERE researcher_id = :rid AND activity_id = :aid"),
+            {"rid": researcher_id, "aid": activity_id},
+        )
+        if not existing.first():
+            session.add(ResearcherActivity(researcher_id=researcher_id, activity_id=activity_id, role=role))
+
+    async def _upsert_identifiers(self, session: AsyncSession, researcher_id: int, data: dict) -> int:
+        """Extract and upsert identifiers from a VERSO researcher record."""
+        count = 0
+        try:
+            # VERSO stores identifiers in various places
+            identifiers = data.get("researcher_identifier") or data.get("identifiers") or []
+            if isinstance(identifiers, list):
+                for ident in identifiers:
+                    if isinstance(ident, dict):
+                        id_type = str(ident.get("type") or ident.get("identifier_type") or "")[:50]
+                        id_value = str(ident.get("value") or ident.get("identifier_value") or "")[:255]
+                        if id_type and id_value:
+                            existing = await session.execute(
+                                text(
+                                    "SELECT id FROM researcher_identifiers "
+                                    "WHERE researcher_id = :rid AND identifier_type = :itype AND identifier_value = :ival"
+                                ),
+                                {"rid": researcher_id, "itype": id_type, "ival": id_value},
+                            )
+                            if not existing.first():
+                                session.add(ResearcherIdentifier(
+                                    researcher_id=researcher_id,
+                                    identifier_type=id_type,
+                                    identifier_value=id_value,
+                                ))
+                                count += 1
+
+            # Check for ORCID at top level
+            orcid = data.get("orcid") or data.get("orcid_id")
+            if orcid:
+                orcid = str(orcid)[:255]
+                existing = await session.execute(
+                    text(
+                        "SELECT id FROM researcher_identifiers "
+                        "WHERE researcher_id = :rid AND identifier_type = 'orcid' AND identifier_value = :ival"
+                    ),
+                    {"rid": researcher_id, "ival": orcid},
+                )
+                if not existing.first():
+                    session.add(ResearcherIdentifier(
+                        researcher_id=researcher_id,
+                        identifier_type="orcid",
+                        identifier_value=orcid,
+                    ))
+                    count += 1
+
+            # Check for Scopus ID at top level
+            scopus = data.get("scopus_id") or data.get("scopus_author_id")
+            if scopus:
+                scopus = str(scopus)[:255]
+                existing = await session.execute(
+                    text(
+                        "SELECT id FROM researcher_identifiers "
+                        "WHERE researcher_id = :rid AND identifier_type = 'scopus' AND identifier_value = :ival"
+                    ),
+                    {"rid": researcher_id, "ival": scopus},
+                )
+                if not existing.first():
+                    session.add(ResearcherIdentifier(
+                        researcher_id=researcher_id,
+                        identifier_type="scopus",
+                        identifier_value=scopus,
+                    ))
+                    count += 1
+
+        except Exception as e:
+            logger.error(f"Error upserting identifiers for researcher {researcher_id}: {e}")
+        return count
+
+    # ------------------------------------------------------------------
+    # VERSO phase: sync grants for a single researcher
+    # ------------------------------------------------------------------
+
+    async def _sync_researcher_grants(self, session: AsyncSession, researcher_id: int, primary_id: str) -> int:
+        """Fetch grants for a researcher from VERSO and upsert them."""
+        count = 0
+        try:
+            researcher_data = await verso_client.fetch_researcher(primary_id)
+            grants_list = researcher_data.get("grant") or researcher_data.get("grants") or []
+            if not isinstance(grants_list, list):
+                grants_list = [grants_list] if grants_list else []
+
+            for g_data in grants_list:
+                if not isinstance(g_data, dict):
+                    continue
+                grant = await self._upsert_grant(session, g_data)
+                if grant:
+                    role = g_data.get("role") or g_data.get("researcher_role")
+                    await self._link_grant_to_researcher(session, grant.id, researcher_id, role)
+                    count += 1
+        except Exception as e:
+            if "404" not in str(e) and "not found" not in str(e).lower():
+                logger.error(f"Error syncing grants for researcher {primary_id}: {e}")
+        return count
+
+    async def _sync_researcher_projects(self, session: AsyncSession, researcher_id: int, primary_id: str) -> int:
+        count = 0
+        try:
+            researcher_data = await verso_client.fetch_researcher(primary_id)
+            projects_list = researcher_data.get("project") or researcher_data.get("projects") or []
+            if not isinstance(projects_list, list):
+                projects_list = [projects_list] if projects_list else []
+
+            for p_data in projects_list:
+                if not isinstance(p_data, dict):
+                    continue
+                project = await self._upsert_project(session, p_data)
+                if project:
+                    role = p_data.get("role") or p_data.get("researcher_role")
+                    await self._link_project_to_researcher(session, project.id, researcher_id, role)
+                    count += 1
+        except Exception as e:
+            if "404" not in str(e) and "not found" not in str(e).lower():
+                logger.error(f"Error syncing projects for researcher {primary_id}: {e}")
+        return count
+
+    async def _sync_researcher_activities(self, session: AsyncSession, researcher_id: int, primary_id: str) -> int:
+        count = 0
+        try:
+            researcher_data = await verso_client.fetch_researcher(primary_id)
+            activities_list = researcher_data.get("activity") or researcher_data.get("activities") or []
+            if not isinstance(activities_list, list):
+                activities_list = [activities_list] if activities_list else []
+
+            for a_data in activities_list:
+                if not isinstance(a_data, dict):
+                    continue
+                activity = await self._upsert_activity(session, a_data)
+                if activity:
+                    role = a_data.get("role") or a_data.get("researcher_role")
+                    await self._link_activity_to_researcher(session, activity.id, researcher_id, role)
+                    count += 1
+        except Exception as e:
+            if "404" not in str(e) and "not found" not in str(e).lower():
+                logger.error(f"Error syncing activities for researcher {primary_id}: {e}")
+        return count
+
+    async def _sync_researcher_identifiers(self, session: AsyncSession, researcher_id: int, primary_id: str) -> int:
+        count = 0
+        try:
+            researcher_data = await verso_client.fetch_researcher(primary_id)
+            count = await self._upsert_identifiers(session, researcher_id, researcher_data)
+        except Exception as e:
+            if "404" not in str(e) and "not found" not in str(e).lower():
+                logger.error(f"Error syncing identifiers for researcher {primary_id}: {e}")
+        return count
+
+    # ------------------------------------------------------------------
+    # Combined VERSO fetch: one API call per researcher for all entity types
+    # ------------------------------------------------------------------
+
+    async def _sync_researcher_verso_data(
+        self, session: AsyncSession, researcher_id: int, primary_id: str
+    ) -> dict:
+        """Fetch full VERSO researcher record once and extract grants, projects, activities, identifiers."""
+        counts = {"grants": 0, "projects": 0, "activities": 0, "identifiers": 0}
+        try:
+            researcher_data = await verso_client.fetch_researcher(primary_id)
+        except Exception as e:
+            if "404" not in str(e) and "not found" not in str(e).lower():
+                logger.error(f"Error fetching VERSO data for {primary_id}: {e}")
+            return counts
+
+        # Grants
+        grants_list = researcher_data.get("grant") or researcher_data.get("grants") or []
+        if not isinstance(grants_list, list):
+            grants_list = [grants_list] if grants_list else []
+        for g_data in grants_list:
+            if not isinstance(g_data, dict):
+                continue
+            grant = await self._upsert_grant(session, g_data)
+            if grant:
+                role = g_data.get("role") or g_data.get("researcher_role")
+                await self._link_grant_to_researcher(session, grant.id, researcher_id, role)
+                counts["grants"] += 1
+
+        # Projects
+        projects_list = researcher_data.get("project") or researcher_data.get("projects") or []
+        if not isinstance(projects_list, list):
+            projects_list = [projects_list] if projects_list else []
+        for p_data in projects_list:
+            if not isinstance(p_data, dict):
+                continue
+            project = await self._upsert_project(session, p_data)
+            if project:
+                role = p_data.get("role") or p_data.get("researcher_role")
+                await self._link_project_to_researcher(session, project.id, researcher_id, role)
+                counts["projects"] += 1
+
+        # Activities
+        activities_list = researcher_data.get("activity") or researcher_data.get("activities") or []
+        if not isinstance(activities_list, list):
+            activities_list = [activities_list] if activities_list else []
+        for a_data in activities_list:
+            if not isinstance(a_data, dict):
+                continue
+            activity = await self._upsert_activity(session, a_data)
+            if activity:
+                role = a_data.get("role") or a_data.get("researcher_role")
+                await self._link_activity_to_researcher(session, activity.id, researcher_id, role)
+                counts["activities"] += 1
+
+        # Identifiers
+        counts["identifiers"] = await self._upsert_identifiers(session, researcher_id, researcher_data)
+
+        return counts
+
+    # ------------------------------------------------------------------
+    # Main sync
+    # ------------------------------------------------------------------
 
     async def full_sync(self):
         if self.is_syncing:
@@ -422,6 +859,10 @@ class ResearcherSyncService:
             "researchers_synced": 0,
             "publications_synced": 0,
             "summaries_matched": 0,
+            "grants_synced": 0,
+            "projects_synced": 0,
+            "activities_synced": 0,
+            "identifiers_synced": 0,
             "last_error": None,
         }
 
@@ -534,6 +975,47 @@ class ResearcherSyncService:
             except Exception as e:
                 logger.error(f"Error applying summaries: {e}")
                 self.sync_stats["last_error"] = str(e)[:200]
+
+            # Phases 4-7: VERSO data (grants, projects, activities, identifiers)
+            # Only run if VERSO API key is configured
+            if settings.VERSO_API_KEY:
+                logger.info("Researcher sync phases 4-7: fetching VERSO data...")
+                self.sync_stats["phase"] = "verso"
+                await self._publish_stats()
+
+                # Load all researcher IDs + primary_ids
+                async with async_session() as session:
+                    rows = (await session.execute(
+                        select(Researcher.id, Researcher.primary_id)
+                    )).all()
+
+                total_researchers = len(rows)
+                for i, (rid, pid) in enumerate(rows):
+                    if self._cancel_requested:
+                        self.sync_stats["cancelled"] = True
+                        await self._finish_sync_log(log_id, "cancelled", self.sync_stats)
+                        return
+
+                    try:
+                        async with async_session() as session:
+                            async with session.begin():
+                                counts = await self._sync_researcher_verso_data(session, rid, pid)
+                                self.sync_stats["grants_synced"] += counts["grants"]
+                                self.sync_stats["projects_synced"] += counts["projects"]
+                                self.sync_stats["activities_synced"] += counts["activities"]
+                                self.sync_stats["identifiers_synced"] += counts["identifiers"]
+                                total_verso = sum(counts.values())
+                                self.sync_stats["success"] += total_verso
+                    except Exception as e:
+                        logger.error(f"Error syncing VERSO data for researcher {pid}: {e}")
+                        self.sync_stats["errors"] += 1
+                        self.sync_stats["last_error"] = str(e)[:200]
+
+                    if (i + 1) % 25 == 0 or (i + 1) == total_researchers:
+                        self.sync_stats["verso_progress"] = f"{i + 1}/{total_researchers}"
+                        await self._publish_stats()
+            else:
+                logger.info("Skipping VERSO phases — VERSO_API_KEY not configured")
 
             # Invalidate caches
             await cache_service.invalidate_all()

@@ -14,7 +14,8 @@ from app.models import Opportunity, Agency
 from app.models.sync_log import SyncLog
 from app.models.researcher import (
     Researcher, ResearcherKeyword, ResearcherAffiliation,
-    ResearcherEducation, Publication,
+    ResearcherEducation, ResearcherIdentifier,
+    Publication, Grant, Project, Activity,
 )
 from app.services.sync_service import sync_service
 from app.services.researcher_sync_service import researcher_sync_service
@@ -416,6 +417,10 @@ async def data_health_collabnet(request: Request, db: AsyncSession = Depends(get
     total_keywords = (await db.execute(select(func.count(ResearcherKeyword.id)))).scalar() or 0
     total_affiliations = (await db.execute(select(func.count(ResearcherAffiliation.id)))).scalar() or 0
     total_education = (await db.execute(select(func.count(ResearcherEducation.id)))).scalar() or 0
+    total_grants = (await db.execute(select(func.count(Grant.id)))).scalar() or 0
+    total_projects = (await db.execute(select(func.count(Project.id)))).scalar() or 0
+    total_activities = (await db.execute(select(func.count(Activity.id)))).scalar() or 0
+    total_identifiers = (await db.execute(select(func.count(ResearcherIdentifier.id)))).scalar() or 0
 
     return templates.TemplateResponse("partials/admin/data_health_collabnet.html", {
         "request": request,
@@ -427,6 +432,10 @@ async def data_health_collabnet(request: Request, db: AsyncSession = Depends(get
         "total_keywords": total_keywords,
         "total_affiliations": total_affiliations,
         "total_education": total_education,
+        "total_grants": total_grants,
+        "total_projects": total_projects,
+        "total_activities": total_activities,
+        "total_identifiers": total_identifiers,
     })
 
 

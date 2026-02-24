@@ -5,7 +5,12 @@
         Syncing
     </span>
     <span class="text-muted">
-        Researcher sync in progress &mdash; Phase: {{ stats.get("phase", "starting") | title }}
+        {% set phase = stats.get("phase", "starting") %}
+        {% if phase == "verso" %}
+        Researcher sync in progress &mdash; Phase: VERSO Data ({{ stats.get("verso_progress", "...") }})
+        {% else %}
+        Researcher sync in progress &mdash; Phase: {{ phase | title }}
+        {% endif %}
     </span>
 </div>
 
@@ -23,7 +28,7 @@
     </div>
 </div>
 
-<div class="row text-center mb-3">
+<div class="row text-center mb-2">
     <div class="col">
         <div class="fw-bold">{{ "{:,}".format(processed) }} / {{ "{:,}".format(total) }}</div>
         <small class="text-muted">Items Processed</small>
@@ -53,6 +58,27 @@
         <small class="text-muted">Elapsed</small>
     </div>
 </div>
+
+{% if stats.get("grants_synced", 0) or stats.get("projects_synced", 0) or stats.get("activities_synced", 0) or stats.get("identifiers_synced", 0) or stats.get("phase") == "verso" %}
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("grants_synced", 0)) }}</div>
+        <small class="text-muted">Grants</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("projects_synced", 0)) }}</div>
+        <small class="text-muted">Projects</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("activities_synced", 0)) }}</div>
+        <small class="text-muted">Activities</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("identifiers_synced", 0)) }}</div>
+        <small class="text-muted">Identifiers</small>
+    </div>
+</div>
+{% endif %}
 
 {% if stats.get("last_error") %}
 <div class="alert alert-warning py-2 small mb-3">
@@ -87,7 +113,7 @@
 </div>
 
 {% if stats.get("completed") %}
-<div class="row text-center mb-3">
+<div class="row text-center mb-2">
     <div class="col">
         <div class="fw-bold text-success">{{ "{:,}".format(stats.get("researchers_synced", 0)) }}</div>
         <small class="text-muted">Researchers</small>
@@ -105,6 +131,26 @@
         <small class="text-muted">Errors</small>
     </div>
 </div>
+{% if stats.get("grants_synced", 0) or stats.get("projects_synced", 0) or stats.get("activities_synced", 0) or stats.get("identifiers_synced", 0) %}
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("grants_synced", 0)) }}</div>
+        <small class="text-muted">Grants</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("projects_synced", 0)) }}</div>
+        <small class="text-muted">Projects</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("activities_synced", 0)) }}</div>
+        <small class="text-muted">Activities</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: var(--gold, #d4a843);">{{ "{:,}".format(stats.get("identifiers_synced", 0)) }}</div>
+        <small class="text-muted">Identifiers</small>
+    </div>
+</div>
+{% endif %}
 {% endif %}
 
 {% if is_admin %}

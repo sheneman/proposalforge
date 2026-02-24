@@ -270,12 +270,44 @@ async def cancel_researcher_sync(request: Request):
 
 @router.post("/matches/recompute", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def trigger_match_recompute(request: Request):
-    asyncio.create_task(match_service.recompute_all_matches())
-    return HTMLResponse(
-        '<div class="alert alert-success py-2">'
-        '<i class="bi bi-check-circle"></i> Match recomputation started in the background.'
-        '</div>'
-    )
+    if not match_service.is_computing:
+        asyncio.create_task(match_service.recompute_all_matches())
+        await asyncio.sleep(0.2)
+    return await match_recompute_status(request)
+
+
+@router.get("/matches/status", response_class=HTMLResponse)
+async def match_recompute_status(request: Request):
+    # Check this worker first
+    if match_service.is_computing:
+        stats = dict(match_service.match_stats)
+        return templates.TemplateResponse("partials/admin/match_status.html", {
+            "request": request,
+            "is_computing": True,
+            "stats": stats,
+        })
+
+    # Check Redis for stats from another worker
+    shared = await match_service.get_shared_match_stats()
+    if shared and shared.get("is_computing"):
+        return templates.TemplateResponse("partials/admin/match_status.html", {
+            "request": request,
+            "is_computing": True,
+            "stats": shared.get("stats", {}),
+        })
+
+    # Not computing — show last result if available
+    stats = {}
+    if shared:
+        stats = shared.get("stats", {})
+    elif match_service.match_stats:
+        stats = dict(match_service.match_stats)
+
+    return templates.TemplateResponse("partials/admin/match_status.html", {
+        "request": request,
+        "is_computing": False,
+        "stats": stats,
+    })
 
 
 # ====================================================================

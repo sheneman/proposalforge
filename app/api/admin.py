@@ -337,52 +337,43 @@ async def match_recompute_status(request: Request, db: AsyncSession = Depends(ge
 async def data_health_grants(request: Request, db: AsyncSession = Depends(get_db)):
     tz = await settings_service.get_timezone(db)
 
-    total = (await db.execute(select(func.count(Opportunity.id)))).scalar() or 0
+    # Single query to compute all opportunity stats in one table scan
+    stats_row = (await db.execute(select(
+        func.count(Opportunity.id),
+        func.sum(func.IF(Opportunity.close_date.is_(None), 1, 0)),
+        func.sum(func.IF(Opportunity.award_ceiling.is_(None), 1, 0)),
+        func.sum(func.IF(
+            (Opportunity.synopsis_description.is_(None)) | (Opportunity.synopsis_description == ""),
+            1, 0,
+        )),
+        func.sum(func.IF(Opportunity.is_team_based == True, 1, 0)),
+        func.sum(func.IF(Opportunity.is_multi_institution == True, 1, 0)),
+        func.sum(func.IF(Opportunity.is_multi_disciplinary == True, 1, 0)),
+        func.min(Opportunity.last_synced_at),
+        func.avg(
+            func.timestampdiff(text("HOUR"), Opportunity.last_synced_at, func.now())
+        ),
+    ))).one()
 
+    total = stats_row[0] or 0
+    missing_close_date = int(stats_row[1] or 0)
+    missing_award_ceiling = int(stats_row[2] or 0)
+    missing_description = int(stats_row[3] or 0)
+    team_based = int(stats_row[4] or 0)
+    multi_inst = int(stats_row[5] or 0)
+    multi_disc = int(stats_row[6] or 0)
+    oldest_sync = stats_row[7]
+    median_sync_age = round(float(stats_row[8]), 1) if stats_row[8] is not None else None
+
+    # Status breakdown (few rows, fast)
     status_counts = {}
-    stmt = select(Opportunity.status, func.count(Opportunity.id)).group_by(Opportunity.status)
-    rows = (await db.execute(stmt)).all()
+    rows = (await db.execute(
+        select(Opportunity.status, func.count(Opportunity.id)).group_by(Opportunity.status)
+    )).all()
     for status, count in rows:
         status_counts[status] = count
 
     agency_count = (await db.execute(select(func.count(Agency.code)))).scalar() or 0
-
-    oldest_sync = (await db.execute(
-        select(func.min(Opportunity.last_synced_at)).where(Opportunity.last_synced_at.isnot(None))
-    )).scalar()
-    median_sync_age = None
-    try:
-        avg_sync = (await db.execute(
-            select(func.avg(
-                func.timestampdiff(text("HOUR"), Opportunity.last_synced_at, func.now())
-            )).where(Opportunity.last_synced_at.isnot(None))
-        )).scalar()
-        if avg_sync is not None:
-            median_sync_age = round(float(avg_sync), 1)
-    except Exception:
-        pass
-
-    missing_close_date = (await db.execute(
-        select(func.count(Opportunity.id)).where(Opportunity.close_date.is_(None))
-    )).scalar() or 0
-    missing_award_ceiling = (await db.execute(
-        select(func.count(Opportunity.id)).where(Opportunity.award_ceiling.is_(None))
-    )).scalar() or 0
-    missing_description = (await db.execute(
-        select(func.count(Opportunity.id)).where(
-            (Opportunity.synopsis_description.is_(None)) | (Opportunity.synopsis_description == "")
-        )
-    )).scalar() or 0
-
-    team_based = (await db.execute(
-        select(func.count(Opportunity.id)).where(Opportunity.is_team_based == True)
-    )).scalar() or 0
-    multi_inst = (await db.execute(
-        select(func.count(Opportunity.id)).where(Opportunity.is_multi_institution == True)
-    )).scalar() or 0
-    multi_disc = (await db.execute(
-        select(func.count(Opportunity.id)).where(Opportunity.is_multi_disciplinary == True)
-    )).scalar() or 0
 
     return templates.TemplateResponse("partials/admin/data_health_grants.html", {
         "request": request,

@@ -298,6 +298,20 @@ class ResearcherSyncService:
             logger.error(f"Error upserting researcher: {e}", exc_info=True)
             return None
 
+    @staticmethod
+    def _str_field(val, max_len: int | None = None) -> str | None:
+        """Safely coerce an API value to a string, handling lists."""
+        if val is None:
+            return None
+        if isinstance(val, list):
+            val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val if v)
+        val = str(val).strip() if val else None
+        if not val:
+            return None
+        if max_len:
+            val = val[:max_len]
+        return val
+
     async def _upsert_publication(self, session: AsyncSession, data: dict) -> Publication | None:
         """Upsert a publication from CollabNet documents API."""
         try:
@@ -333,16 +347,16 @@ class ResearcherSyncService:
             values = dict(
                 collabnet_id=collabnet_id,
                 title=title,
-                abstract=data.get("abstract"),
+                abstract=self._str_field(data.get("abstract")),
                 keywords=kw_text,
-                doi=data.get("doi"),
-                uri=data.get("uri") or data.get("url"),
-                resource_type=data.get("resource_type") or data.get("resourceType") or data.get("type"),
-                publication_date=str(data.get("publication_date") or data.get("date") or "")[:50] or None,
-                publication_info=data.get("publication_info") or data.get("publicationInfo") or data.get("journal"),
-                affiliation=data.get("affiliation") or data.get("department"),
-                open_access=data.get("open_access_indicator") or data.get("open_access"),
-                file_download_url=data.get("file_download_url"),
+                doi=self._str_field(data.get("doi"), 500),
+                uri=self._str_field(data.get("uri") or data.get("url"), 500),
+                resource_type=self._str_field(data.get("resource_type") or data.get("resourceType") or data.get("type"), 100),
+                publication_date=self._str_field(data.get("publication_date") or data.get("date"), 50),
+                publication_info=self._str_field(data.get("publication_info") or data.get("publicationInfo") or data.get("journal")),
+                affiliation=self._str_field(data.get("affiliation") or data.get("department"), 500),
+                open_access=self._str_field(data.get("open_access_indicator") or data.get("open_access"), 10),
+                file_download_url=self._str_field(data.get("file_download_url"), 1000),
                 contributing_faculty=contrib_text or None,
             )
 

@@ -370,17 +370,16 @@ class ResearcherSyncService:
             await session.flush()
 
             # Link authors to researchers
+            # Method 1: by author_details primary_id from API
             author_details = data.get("author_details") or data.get("authors") or []
             for author in author_details:
                 if isinstance(author, dict):
                     author_id = author.get("primary_id") or author.get("username") or author.get("id")
                     if author_id:
-                        # Find researcher by primary_id
                         r_stmt = select(Researcher.id).where(Researcher.primary_id == str(author_id))
                         r_result = await session.execute(r_stmt)
                         r_row = r_result.first()
                         if r_row:
-                            # Check if link already exists
                             existing = await session.execute(
                                 text("SELECT id FROM researcher_publications WHERE researcher_id = :rid AND publication_id = :pid"),
                                 {"rid": r_row[0], "pid": pub.id},
@@ -388,10 +387,81 @@ class ResearcherSyncService:
                             if not existing.first():
                                 session.add(ResearcherPublication(researcher_id=r_row[0], publication_id=pub.id))
 
+            # Method 2: by contributing_faculty names
+            if pub.contributing_faculty:
+                faculty_names = [n.strip() for n in pub.contributing_faculty.split(",") if n.strip()]
+                for name in faculty_names:
+                    r_stmt = select(Researcher.id).where(Researcher.full_name == name)
+                    r_result = await session.execute(r_stmt)
+                    r_row = r_result.first()
+                    if r_row:
+                        existing = await session.execute(
+                            text("SELECT id FROM researcher_publications WHERE researcher_id = :rid AND publication_id = :pid"),
+                            {"rid": r_row[0], "pid": pub.id},
+                        )
+                        if not existing.first():
+                            session.add(ResearcherPublication(researcher_id=r_row[0], publication_id=pub.id))
+
             return pub
         except Exception as e:
             logger.error(f"Error upserting publication: {e}", exc_info=True)
             return None
+
+    async def backfill_publication_links(self) -> dict:
+        """One-time backfill: link publications to researchers via contributing_faculty names."""
+        linked = 0
+        skipped = 0
+        errors = 0
+
+        async with async_session() as session:
+            # Build researcher name -> id lookup
+            r_result = await session.execute(select(Researcher.id, Researcher.full_name))
+            name_to_id = {row[1]: row[0] for row in r_result.all() if row[1]}
+            logger.info(f"Backfill: loaded {len(name_to_id)} researcher names")
+
+            # Fetch all publications with contributing_faculty
+            pub_result = await session.execute(
+                select(Publication.id, Publication.contributing_faculty)
+                .where(Publication.contributing_faculty.isnot(None))
+            )
+            pubs = pub_result.all()
+            logger.info(f"Backfill: checking {len(pubs)} publications with contributing_faculty")
+
+            # Fetch existing links to avoid duplicates
+            existing_result = await session.execute(
+                text("SELECT researcher_id, publication_id FROM researcher_publications")
+            )
+            existing_links = set((r[0], r[1]) for r in existing_result.all())
+            logger.info(f"Backfill: {len(existing_links)} existing links")
+
+            batch = []
+            for pub_id, faculty_str in pubs:
+                names = [n.strip() for n in faculty_str.split(",") if n.strip()]
+                for name in names:
+                    researcher_id = name_to_id.get(name)
+                    if researcher_id and (researcher_id, pub_id) not in existing_links:
+                        batch.append(ResearcherPublication(
+                            researcher_id=researcher_id,
+                            publication_id=pub_id,
+                        ))
+                        existing_links.add((researcher_id, pub_id))
+                        linked += 1
+                    elif not researcher_id:
+                        skipped += 1
+
+                # Flush in batches of 500
+                if len(batch) >= 500:
+                    session.add_all(batch)
+                    await session.flush()
+                    batch = []
+
+            if batch:
+                session.add_all(batch)
+
+            await session.commit()
+
+        logger.info(f"Backfill complete: {linked} linked, {skipped} skipped (no match), {errors} errors")
+        return {"linked": linked, "skipped": skipped, "errors": errors}
 
     async def _apply_summaries(self, session: AsyncSession, summaries: list[dict]) -> int:
         """Match summaries to researchers and update ai_summary fields (decomposed + concatenated)."""

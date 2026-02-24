@@ -269,6 +269,13 @@ async def cancel_researcher_sync(request: Request):
     return await researcher_sync_live(request)
 
 
+@router.post("/publications/backfill-links", dependencies=[Depends(require_admin)])
+async def backfill_publication_links():
+    """Link publications to researchers via contributing_faculty names."""
+    result = await researcher_sync_service.backfill_publication_links()
+    return result
+
+
 @router.post("/matches/recompute", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def trigger_match_recompute(request: Request):
     if not await match_service.is_computing_anywhere():

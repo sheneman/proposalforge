@@ -277,7 +277,9 @@ async def trigger_match_recompute(request: Request):
 
 
 @router.get("/matches/status", response_class=HTMLResponse)
-async def match_recompute_status(request: Request):
+async def match_recompute_status(request: Request, db: AsyncSession = Depends(get_db)):
+    from app.models.researcher import ResearcherOpportunityMatch
+
     # Check this worker first
     if match_service.is_computing:
         stats = dict(match_service.match_stats)
@@ -298,18 +300,31 @@ async def match_recompute_status(request: Request):
             "is_admin": _is_admin(request),
         })
 
-    # Not computing — show last result if available
-    stats = {}
+    # Not computing — get current match counts from DB
+    match_count = (await db.execute(
+        select(func.count(ResearcherOpportunityMatch.id))
+    )).scalar() or 0
+    last_computed = (await db.execute(
+        select(func.max(ResearcherOpportunityMatch.computed_at))
+    )).scalar()
+
+    # Last run result if available
+    last_run_stats = {}
     if shared:
-        stats = shared.get("stats", {})
+        last_run_stats = shared.get("stats", {})
     elif match_service.match_stats:
-        stats = dict(match_service.match_stats)
+        last_run_stats = dict(match_service.match_stats)
+
+    tz = await settings_service.get_timezone(db)
 
     return templates.TemplateResponse("partials/admin/match_status.html", {
         "request": request,
         "is_computing": False,
-        "stats": stats,
+        "stats": last_run_stats,
+        "match_count": match_count,
+        "last_computed": last_computed,
         "is_admin": _is_admin(request),
+        "tz": tz,
     })
 
 

@@ -67,6 +67,14 @@
                             </div>
                         </div>
                         <hr>
+                        <!-- Match status -->
+                        <h6 class="text-muted mb-2"><i class="bi bi-diagram-3"></i> Matching</h6>
+                        <div id="match-recompute-status"
+                             hx-get="/admin/matches/status"
+                             hx-trigger="load"
+                             hx-swap="innerHTML">
+                        </div>
+                        <hr>
                         <!-- Data health -->
                         <h6 class="text-muted mb-2"><i class="bi bi-heart-pulse"></i> Data Health</h6>
                         <div id="data-health-collabnet"

@@ -108,18 +108,13 @@
 {% endif %}
 
 {% if is_admin %}
-<div class="d-flex gap-2 flex-wrap mb-2">
+<div class="d-flex gap-2 flex-wrap">
     <button class="btn btn-primary btn-sm"
             hx-post="/admin/researcher-sync/trigger"
             hx-target="#researcher-sync-live"
             hx-swap="innerHTML">
         <i class="bi bi-arrow-repeat"></i> Sync Researchers
     </button>
-</div>
-<div id="match-recompute-status"
-     hx-get="/admin/matches/status"
-     hx-trigger="load"
-     hx-swap="innerHTML">
 </div>
 {% else %}
 <div class="text-muted small"><i class="bi bi-lock"></i> Log in to manage researcher syncs</div>

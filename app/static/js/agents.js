@@ -182,6 +182,8 @@ function hideProgressPanel() {
 
 // ─── SSE Log Streaming ──────────────────────────────
 
+let progressFallbackInterval = null;
+
 function startLogStream() {
     stopLogStream();
     if (!activeRunId) return;
@@ -194,7 +196,7 @@ function startLogStream() {
             appendLogEntry(event);
             updateProgressFromEvent(event);
 
-            if (event.type === 'workflow_end' || event.type === 'cancel') {
+            if (event.type === 'workflow_end') {
                 onWorkflowFinished(event);
             }
         } catch (err) {
@@ -206,23 +208,39 @@ function startLogStream() {
         // SSE connection lost — check if workflow ended
         setTimeout(() => {
             if (activeRunId) {
-                fetch(`/agents/api/workflows/runs/${activeRunId}/progress`)
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
-                            onWorkflowFinished(data);
-                        }
-                    })
-                    .catch(() => {});
+                checkRunStatus();
             }
         }, 2000);
     };
+
+    // Fallback: poll progress endpoint every 10s to catch zombie/stuck runs
+    if (progressFallbackInterval) clearInterval(progressFallbackInterval);
+    progressFallbackInterval = setInterval(() => {
+        if (activeRunId) checkRunStatus();
+    }, 10000);
+}
+
+async function checkRunStatus() {
+    if (!activeRunId) return;
+    try {
+        const resp = await fetch(`/agents/api/workflows/runs/${activeRunId}/progress`);
+        const data = await resp.json();
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+            onWorkflowFinished(data);
+        }
+    } catch (e) {
+        // ignore
+    }
 }
 
 function stopLogStream() {
     if (eventSource) {
         eventSource.close();
         eventSource = null;
+    }
+    if (progressFallbackInterval) {
+        clearInterval(progressFallbackInterval);
+        progressFallbackInterval = null;
     }
 }
 

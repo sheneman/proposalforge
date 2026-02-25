@@ -205,7 +205,7 @@ async def stream_run_logs(run_id: int):
                         # Check for terminal events
                         try:
                             evt = json.loads(entry)
-                            if evt.get("type") in ("workflow_end", "cancel"):
+                            if evt.get("type") == "workflow_end":
                                 return
                         except (json.JSONDecodeError, TypeError):
                             pass

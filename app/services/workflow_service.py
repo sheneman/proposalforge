@@ -62,6 +62,30 @@ class WorkflowService:
             pass
         return False
 
+    async def cleanup_zombie_runs(self):
+        """Mark any 'running' or 'pending' runs as failed on startup.
+
+        These are zombies from a previous server restart.
+        """
+        try:
+            async with async_session() as session:
+                stmt = select(WorkflowRun).where(
+                    WorkflowRun.status.in_(["running", "pending"])
+                )
+                result = await session.execute(stmt)
+                zombies = list(result.scalars().all())
+                for run in zombies:
+                    run.status = "failed"
+                    run.completed_at = datetime.utcnow()
+                    run.error_message = "Terminated: server restarted while workflow was running"
+                    logger.warning("Cleaned up zombie workflow run %d", run.id)
+                if zombies:
+                    await session.commit()
+            # Also release any stale lock
+            await self._release_lock()
+        except Exception:
+            logger.exception("Failed to clean up zombie workflow runs")
+
     # ─── Workflow CRUD ────────────────────────────────
 
     async def seed_workflows(self, session: AsyncSession) -> int:
@@ -338,39 +362,55 @@ class WorkflowService:
     # ─── Cancel Workflow ──────────────────────────────
 
     async def cancel_run(self, run_id: int) -> bool:
-        """Request cancellation of a running workflow via Redis flag."""
+        """Request cancellation of a running workflow via Redis flag.
+
+        Works across multiple uvicorn workers by using Redis as the
+        cancel signal rather than relying on in-process task references.
+        """
+        # Check if this run is actually running (via DB, works cross-worker)
+        is_running = False
+        try:
+            async with async_session() as session:
+                run = await self.get_run(session, run_id)
+                if run and run.status in ("running", "pending"):
+                    is_running = True
+        except Exception:
+            pass
+
+        if not is_running:
+            return False
+
+        # Set Redis cancel flag — checked between nodes and batches
+        try:
+            r = cache_service._redis
+            if r:
+                await r.set(f"pf:workflow:{run_id}:cancel", "1", ex=600)
+        except Exception:
+            pass
+
+        # Emit cancel log event
+        try:
+            from app.services.agent_graph import _emit_log
+            await _emit_log(run_id, {
+                "type": "cancel",
+                "message": "Cancel requested — stopping after current operation",
+            })
+        except Exception:
+            pass
+
+        # Publish cancelling progress
+        await self._publish_progress(run_id, {
+            "status": "cancelling",
+            "phase": "cancelling",
+        })
+
+        # If the task happens to be in this worker's memory, also cancel it
+        self._cancel_requested[run_id] = True
         task = self._running_tasks.get(run_id)
         if task and not task.done():
-            self._cancel_requested[run_id] = True
-
-            # Set Redis cancel flag — checked between nodes and batches
-            try:
-                r = cache_service._redis
-                if r:
-                    await r.set(f"pf:workflow:{run_id}:cancel", "1", ex=600)
-            except Exception:
-                pass
-
-            # Emit cancel log event
-            try:
-                from app.services.agent_graph import _emit_log
-                await _emit_log(run_id, {
-                    "type": "cancel",
-                    "message": "Cancel requested — stopping after current operation",
-                })
-            except Exception:
-                pass
-
-            # Publish cancelling progress
-            await self._publish_progress(run_id, {
-                "status": "cancelling",
-                "phase": "cancelling",
-            })
-
-            # Keep task.cancel() as backup
             task.cancel()
-            return True
-        return False
+
+        return True
 
     # ─── Serialization ────────────────────────────────
 

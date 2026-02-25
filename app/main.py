@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
 
     # Clean up any orphaned "running" sync logs from prior crashes/restarts
     await sync_service._mark_stale_syncs()
+    await workflow_service.cleanup_zombie_runs()
 
     # Start scheduler and optional initial sync only in one worker.
     # Uvicorn workers each run lifespan; use a Redis lock to ensure only one proceeds.

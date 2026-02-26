@@ -38,6 +38,20 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
 
+    # Startup migration: add checkpoint columns to workflow_runs if missing
+    from sqlalchemy import text as sa_text
+    async with engine.begin() as conn:
+        for ddl in [
+            "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS last_completed_node VARCHAR(100) DEFAULT NULL",
+            "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS checkpoint_state MEDIUMTEXT DEFAULT NULL",
+            "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0",
+        ]:
+            try:
+                await conn.execute(sa_text(ddl))
+            except Exception:
+                pass  # Column already exists or table doesn't exist yet
+    logger.info("Startup migrations applied")
+
     # Sync agent definitions from AGENT.md files and seed defaults
     try:
         async with async_session() as session:
@@ -50,7 +64,16 @@ async def lifespan(app: FastAPI):
 
     # Clean up any orphaned "running" sync logs from prior crashes/restarts
     await sync_service._mark_stale_syncs()
-    await workflow_service.cleanup_zombie_runs()
+
+    # Resume interrupted workflow runs after a short delay for services to stabilize
+    async def _delayed_resume():
+        await asyncio.sleep(3)
+        try:
+            await workflow_service.resume_interrupted_runs()
+        except Exception:
+            logger.exception("Failed to resume interrupted workflow runs")
+
+    asyncio.create_task(_delayed_resume())
 
     # Start scheduler and optional initial sync only in one worker.
     # Uvicorn workers each run lifespan; use a Redis lock to ensure only one proceeds.

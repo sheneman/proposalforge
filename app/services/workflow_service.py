@@ -1,9 +1,11 @@
 import asyncio
 import json
 import logging
+import zlib
+import base64
 from datetime import datetime
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
@@ -15,6 +17,8 @@ logger = logging.getLogger(__name__)
 WORKFLOW_LOCK_KEY = "pf:workflow_lock"
 WORKFLOW_LOCK_TTL = 600  # 10 minutes
 WORKFLOW_PROGRESS_PREFIX = "pf:workflow"
+MAX_AUTO_RETRIES = 10
+COMPRESS_THRESHOLD = 100_000  # bytes — zlib compress payloads above this
 
 
 class WorkflowService:
@@ -62,29 +66,182 @@ class WorkflowService:
             pass
         return False
 
-    async def cleanup_zombie_runs(self):
-        """Mark any 'running' or 'pending' runs as failed on startup.
+    # ─── Checkpoint Serialization ────────────────────
 
-        These are zombies from a previous server restart.
+    @staticmethod
+    def _serialize_state(state: dict) -> str:
+        """Serialize MatchmakingState to a string, compressing if large."""
+        raw = json.dumps(state, default=str)
+        if len(raw) > COMPRESS_THRESHOLD:
+            compressed = zlib.compress(raw.encode("utf-8"))
+            return "zlib:" + base64.b64encode(compressed).decode("ascii")
+        return raw
+
+    @staticmethod
+    def _deserialize_state(data: str) -> dict:
+        """Deserialize a checkpoint string back to a state dict."""
+        if data.startswith("zlib:"):
+            compressed = base64.b64decode(data[5:])
+            raw = zlib.decompress(compressed).decode("utf-8")
+            return json.loads(raw)
+        return json.loads(data)
+
+    async def _save_checkpoint(self, run_id: int, node_name: str, state: dict):
+        """Save checkpoint state to DB after a node completes."""
+        try:
+            serialized = self._serialize_state(state)
+            async with async_session() as session:
+                stmt = (
+                    update(WorkflowRun)
+                    .where(WorkflowRun.id == run_id)
+                    .values(
+                        last_completed_node=node_name,
+                        checkpoint_state=serialized,
+                    )
+                )
+                await session.execute(stmt)
+                await session.commit()
+            logger.debug("Checkpoint saved for run %d at node '%s'", run_id, node_name)
+        except Exception:
+            logger.exception("Failed to save checkpoint for run %d", run_id)
+
+    async def _clear_checkpoint(self, run_id: int):
+        """Clear checkpoint state after run completes/fails/cancels."""
+        try:
+            async with async_session() as session:
+                stmt = (
+                    update(WorkflowRun)
+                    .where(WorkflowRun.id == run_id)
+                    .values(
+                        checkpoint_state=None,
+                        last_completed_node=None,
+                    )
+                )
+                await session.execute(stmt)
+                await session.commit()
+        except Exception:
+            logger.exception("Failed to clear checkpoint for run %d", run_id)
+
+    async def _refresh_lock(self):
+        """Extend the Redis workflow lock TTL to prevent expiry during long runs."""
+        try:
+            r = cache_service._redis
+            if r:
+                await r.expire(WORKFLOW_LOCK_KEY, WORKFLOW_LOCK_TTL)
+        except Exception:
+            logger.debug("Failed to refresh workflow lock TTL", exc_info=True)
+
+    # ─── Resume Logic ─────────────────────────────────
+
+    async def resume_interrupted_runs(self):
+        """Resume or restart interrupted workflow runs on startup.
+
+        Replaces the old cleanup_zombie_runs() method. Runs with a checkpoint
+        are resumed from where they left off; runs without a checkpoint are
+        restarted from scratch. Cancelled runs are skipped.
         """
         try:
+            # Release any stale lock first
+            await self._release_lock()
+
             async with async_session() as session:
                 stmt = select(WorkflowRun).where(
                     WorkflowRun.status.in_(["running", "pending"])
                 )
                 result = await session.execute(stmt)
-                zombies = list(result.scalars().all())
-                for run in zombies:
-                    run.status = "failed"
-                    run.completed_at = datetime.utcnow()
-                    run.error_message = "Terminated: server restarted while workflow was running"
-                    logger.warning("Cleaned up zombie workflow run %d", run.id)
-                if zombies:
+                interrupted = list(result.scalars().all())
+
+            if not interrupted:
+                logger.info("No interrupted workflow runs to resume")
+                return
+
+            from app.services.agent_graph import _is_cancelled
+
+            for run in interrupted:
+                # Check if cancelled while we were down
+                if await _is_cancelled(run.id):
+                    logger.info("Run %d was cancelled, marking as cancelled", run.id)
+                    async with async_session() as session:
+                        db_run = await self.get_run(session, run.id)
+                        if db_run:
+                            db_run.status = "cancelled"
+                            db_run.completed_at = datetime.utcnow()
+                            await session.commit()
+                    continue
+
+                # Check retry cap
+                if run.retry_count >= MAX_AUTO_RETRIES:
+                    logger.warning(
+                        "Run %d exceeded max auto-retries (%d), marking as failed",
+                        run.id, MAX_AUTO_RETRIES,
+                    )
+                    async with async_session() as session:
+                        db_run = await self.get_run(session, run.id)
+                        if db_run:
+                            db_run.status = "failed"
+                            db_run.completed_at = datetime.utcnow()
+                            db_run.error_message = f"Exceeded max auto-retries ({MAX_AUTO_RETRIES})"
+                            db_run.checkpoint_state = None
+                            await session.commit()
+                    continue
+
+                # Increment retry count
+                async with async_session() as session:
+                    stmt = (
+                        update(WorkflowRun)
+                        .where(WorkflowRun.id == run.id)
+                        .values(retry_count=WorkflowRun.retry_count + 1)
+                    )
+                    await session.execute(stmt)
                     await session.commit()
-            # Also release any stale lock
-            await self._release_lock()
+
+                # Parse input params for researcher/opportunity IDs
+                input_params = {}
+                if run.input_params:
+                    try:
+                        input_params = json.loads(run.input_params)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                researcher_ids = input_params.get("researcher_ids", []) or None
+                opportunity_ids = input_params.get("opportunity_ids", []) or None
+
+                # Build resume state if checkpoint exists
+                resume_state = None
+                if run.checkpoint_state and run.last_completed_node:
+                    try:
+                        resume_state = self._deserialize_state(run.checkpoint_state)
+                        resume_state["resume_after"] = run.last_completed_node
+                        logger.info(
+                            "Resuming run %d from checkpoint '%s' (retry %d)",
+                            run.id, run.last_completed_node, run.retry_count + 1,
+                        )
+                    except Exception:
+                        logger.exception("Failed to deserialize checkpoint for run %d, restarting from scratch", run.id)
+                        resume_state = None
+
+                if not resume_state:
+                    logger.info("Restarting run %d from scratch (retry %d)", run.id, run.retry_count + 1)
+
+                # Acquire lock and launch
+                if not await self._acquire_lock():
+                    logger.warning("Cannot resume run %d — workflow lock held, will retry next restart", run.id)
+                    break
+
+                self._cancel_requested[run.id] = False
+                task = asyncio.create_task(
+                    self._execute_matchmaking(
+                        run.id, researcher_ids, opportunity_ids,
+                        resume_state=resume_state,
+                    )
+                )
+                self._running_tasks[run.id] = task
+
+                # Only resume one at a time (lock is held)
+                break
+
         except Exception:
-            logger.exception("Failed to clean up zombie workflow runs")
+            logger.exception("Failed to resume interrupted workflow runs")
 
     # ─── Workflow CRUD ────────────────────────────────
 
@@ -186,7 +343,9 @@ class WorkflowService:
 
             # Launch background task
             self._cancel_requested[run_id] = False
-            task = asyncio.create_task(self._execute_matchmaking(run_id, researcher_ids, opportunity_ids))
+            task = asyncio.create_task(
+                self._execute_matchmaking(run_id, researcher_ids, opportunity_ids)
+            )
             self._running_tasks[run_id] = task
 
             return run_id
@@ -200,6 +359,7 @@ class WorkflowService:
         run_id: int,
         researcher_ids: list[int] | None,
         opportunity_ids: list[int] | None,
+        resume_state: dict | None = None,
     ):
         """Execute the matchmaking LangGraph workflow."""
         from app.services.agent_graph import (
@@ -212,42 +372,50 @@ class WorkflowService:
                 run = await self.get_run(session, run_id)
                 if run:
                     run.status = "running"
-                    run.started_at = datetime.utcnow()
+                    if not run.started_at:
+                        run.started_at = datetime.utcnow()
                     await session.commit()
 
+            is_resume = resume_state is not None
             await self._publish_progress(run_id, {
                 "status": "running",
-                "phase": "initializing",
+                "phase": "resuming" if is_resume else "initializing",
                 "started_at": datetime.utcnow().isoformat(),
             })
 
             await _emit_log(run_id, {
                 "type": "workflow_start",
-                "message": "Matchmaking workflow started",
+                "message": f"Matchmaking workflow {'resumed from checkpoint' if is_resume else 'started'}",
             })
 
             # Build and compile the graph
             graph = build_matchmaking_graph()
             compiled = graph.compile()
 
-            # Initial state
-            initial_state = {
-                "researcher_ids": researcher_ids or [],
-                "opportunity_ids": opportunity_ids or [],
-                "run_id": run_id,
-                "plan": {},
-                "researcher_profiles": [],
-                "opportunity_profiles": [],
-                "candidate_pairs": [],
-                "raw_matches": [],
-                "critiqued_matches": [],
-                "final_matches": [],
-                "iteration": 0,
-                "max_iterations": 2,
-                "messages": [],
-                "errors": [],
-                "status": "starting",
-            }
+            # Initial state — use resume state or build fresh
+            if resume_state:
+                initial_state = resume_state
+                # Ensure run_id is correct (in case of re-assignment)
+                initial_state["run_id"] = run_id
+            else:
+                initial_state = {
+                    "researcher_ids": researcher_ids or [],
+                    "opportunity_ids": opportunity_ids or [],
+                    "run_id": run_id,
+                    "plan": {},
+                    "researcher_profiles": [],
+                    "opportunity_profiles": [],
+                    "candidate_pairs": [],
+                    "raw_matches": [],
+                    "critiqued_matches": [],
+                    "final_matches": [],
+                    "iteration": 0,
+                    "max_iterations": 2,
+                    "messages": [],
+                    "errors": [],
+                    "status": "starting",
+                    "resume_after": "",
+                }
 
             # Execute the graph with astream for per-node progress
             final_state = dict(initial_state)
@@ -261,6 +429,18 @@ class WorkflowService:
                         "status": "running",
                         "phase": phase,
                     })
+
+                    # Save checkpoint after each node completes
+                    iteration = final_state.get("iteration", 0)
+                    if node_name in ("match", "critique"):
+                        checkpoint_key = f"{node_name}:{iteration}"
+                    else:
+                        checkpoint_key = node_name
+                    await self._save_checkpoint(run_id, checkpoint_key, final_state)
+
+                # Refresh lock TTL after each graph iteration
+                await self._refresh_lock()
+
                 # Check cancellation between nodes
                 if await _is_cancelled(run_id):
                     raise WorkflowCancelledError("Workflow cancelled between nodes")
@@ -294,6 +474,9 @@ class WorkflowService:
 
                     await session.commit()
 
+            # Clear checkpoint on completion
+            await self._clear_checkpoint(run_id)
+
             await self._publish_progress(run_id, {
                 "status": status,
                 "phase": "done",
@@ -318,6 +501,9 @@ class WorkflowService:
                         run.completed_at = datetime.utcnow()
                         await session.commit()
 
+                # Clear checkpoint on cancel
+                await self._clear_checkpoint(run_id)
+
                 await self._publish_progress(run_id, {
                     "status": "cancelled",
                     "phase": "done",
@@ -340,6 +526,8 @@ class WorkflowService:
                         run.completed_at = datetime.utcnow()
                         run.error_message = str(e)[:500]
                         await session.commit()
+
+                # Note: do NOT clear checkpoint on failure — it allows resume on next restart
 
                 await self._publish_progress(run_id, {
                     "status": "failed",

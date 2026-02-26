@@ -4,6 +4,7 @@ from sqlalchemy import (
     String, Text, DateTime, Integer, Float, Boolean,
     ForeignKey, Index, text,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -83,6 +84,10 @@ class WorkflowRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+
+    last_completed_node: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    checkpoint_state: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
 
     workflow = relationship("Workflow", back_populates="runs")
     steps = relationship("WorkflowStep", back_populates="run", cascade="all, delete-orphan", lazy="noload")

@@ -81,6 +81,82 @@ class MatchmakingState(TypedDict):
     messages: list
     errors: list[str]
     status: str
+    resume_after: str
+
+
+# Ordered list of linear nodes for resume logic.
+# Looping nodes (match, critique) use iteration-aware keys like "match:1".
+NODE_ORDER = ["plan", "discover", "pre_filter", "match", "critique", "summarize", "persist"]
+
+
+def _make_resumable(node_name: str, node_fn):
+    """Wrap a node function so it skips when resuming from a checkpoint.
+
+    Logic:
+    - If resume_after is empty → run node normally
+    - If this node IS the checkpoint node → clear the marker, skip work
+    - If this node is BEFORE the checkpoint → skip (return {})
+    - If this node is AFTER the checkpoint → run normally
+    """
+    async def wrapper(state: MatchmakingState) -> dict:
+        resume_after = state.get("resume_after", "")
+        if not resume_after:
+            return await node_fn(state)
+
+        # Build current node key (iteration-aware for match/critique)
+        iteration = state.get("iteration", 0)
+        if node_name in ("match", "critique"):
+            current_key = f"{node_name}:{iteration}"
+        else:
+            current_key = node_name
+
+        # Check if this is the checkpoint node
+        checkpoint_base = resume_after.split(":")[0]
+        if resume_after == current_key:
+            # This IS the checkpoint — clear marker, skip work
+            run_id = state.get("run_id", 0)
+            logger.info("Resuming at checkpoint node '%s' (run %d) — clearing marker", current_key, run_id)
+            await _emit_log(run_id, {
+                "type": "info", "node": node_name,
+                "message": f"Resumed at checkpoint '{current_key}', continuing from here",
+            })
+            return {"resume_after": ""}
+
+        # Determine ordering
+        try:
+            checkpoint_idx = NODE_ORDER.index(checkpoint_base)
+            current_idx = NODE_ORDER.index(node_name)
+        except ValueError:
+            # Unknown node, run normally
+            return await node_fn(state)
+
+        if current_idx < checkpoint_idx:
+            # Before checkpoint — skip
+            run_id = state.get("run_id", 0)
+            logger.info("Skipping node '%s' (before checkpoint '%s', run %d)", current_key, resume_after, run_id)
+            await _emit_log(run_id, {
+                "type": "info", "node": node_name,
+                "message": f"Skipping node '{current_key}' (resuming from '{resume_after}')",
+            })
+            return {}
+
+        if current_idx == checkpoint_idx:
+            # Same base node but different iteration (e.g., checkpoint is match:1, current is match:0)
+            # This means we're before the checkpoint iteration — skip
+            run_id = state.get("run_id", 0)
+            logger.info("Skipping node '%s' (checkpoint is '%s', run %d)", current_key, resume_after, run_id)
+            await _emit_log(run_id, {
+                "type": "info", "node": node_name,
+                "message": f"Skipping node '{current_key}' (resuming from '{resume_after}')",
+            })
+            return {}
+
+        # After checkpoint — run normally
+        return await node_fn(state)
+
+    wrapper.__name__ = node_fn.__name__
+    wrapper.__qualname__ = node_fn.__qualname__
+    return wrapper
 
 
 async def _log_step(
@@ -774,6 +850,12 @@ async def persist_node(state: MatchmakingState) -> dict:
     inserted = 0
     try:
         async with async_session() as session:
+            # Delete any existing matches for this run (idempotent on resume)
+            from sqlalchemy import delete
+            await session.execute(
+                delete(AgentMatch).where(AgentMatch.run_id == run_id)
+            )
+
             for m in final_matches:
                 r_id = m.get("researcher_id")
                 o_id = m.get("opportunity_id")
@@ -827,14 +909,14 @@ def build_matchmaking_graph() -> StateGraph:
     """Build and return the matchmaking LangGraph state graph."""
     graph = StateGraph(MatchmakingState)
 
-    # Add nodes
-    graph.add_node("plan", plan_node)
-    graph.add_node("discover", discover_node)
-    graph.add_node("pre_filter", pre_filter_node)
-    graph.add_node("match", match_node)
-    graph.add_node("critique", critique_node)
-    graph.add_node("summarize", summarize_node)
-    graph.add_node("persist", persist_node)
+    # Add nodes wrapped with resume-awareness
+    graph.add_node("plan", _make_resumable("plan", plan_node))
+    graph.add_node("discover", _make_resumable("discover", discover_node))
+    graph.add_node("pre_filter", _make_resumable("pre_filter", pre_filter_node))
+    graph.add_node("match", _make_resumable("match", match_node))
+    graph.add_node("critique", _make_resumable("critique", critique_node))
+    graph.add_node("summarize", _make_resumable("summarize", summarize_node))
+    graph.add_node("persist", _make_resumable("persist", persist_node))
 
     # Add edges
     graph.set_entry_point("plan")

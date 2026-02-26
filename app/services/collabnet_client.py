@@ -5,11 +5,9 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services.retry import MAX_RETRIES, RETRY_BACKOFF
 
 logger = logging.getLogger(__name__)
-
-MAX_RETRIES = 3
-RETRY_BACKOFF = [2, 5, 15]
 PAGE_SIZE = 1000
 
 

@@ -21,6 +21,7 @@ from app.models.agent import WorkflowStep, AgentMatch
 from app.services.agent_service import agent_service
 from app.services.cache_service import cache_service
 from app.services.mcp_manager import mcp_manager
+from app.services.retry import retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,15 @@ async def _invoke_agent(agent_slug: str, user_message: str, run_id: int, node_na
             "detail": {"prompt_preview": user_message[:500], "model": model_used},
         })
 
-        response = await llm.ainvoke(messages)
+        def _not_cancelled(exc):
+            return not isinstance(exc, WorkflowCancelledError)
+
+        response = await retry_async(
+            lambda: llm.ainvoke(messages),
+            logger,
+            description=f"Agent LLM call ({agent_slug})",
+            retryable=_not_cancelled,
+        )
         duration_ms = int((time.time() - start) * 1000)
 
         # Try to extract token usage

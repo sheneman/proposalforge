@@ -4,13 +4,12 @@ from typing import Any, Callable
 
 import httpx
 
+from app.services.retry import MAX_RETRIES, RETRY_BACKOFF
+
 logger = logging.getLogger(__name__)
 
 SEARCH_URL = "https://api.grants.gov/v1/api/search2"
 FETCH_URL = "https://api.grants.gov/v1/api/fetchOpportunity"
-
-MAX_RETRIES = 3
-RETRY_BACKOFF = [2, 5, 15]  # seconds
 
 PAGE_SIZE = 25  # Grants.gov API caps at 25 per request
 

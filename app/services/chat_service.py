@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.retry import retry_async
+
 logger = logging.getLogger(__name__)
 
 # Tables to exclude from dynamic schema introspection
@@ -465,6 +467,28 @@ class ChatService:
             logger.error("openai package not installed")
             raise RuntimeError("openai package is required for chat functionality")
 
+    @staticmethod
+    def _is_retryable_llm_error(exc: Exception) -> bool:
+        """Check if an OpenAI SDK exception is retryable (connection or 5xx)."""
+        try:
+            from openai import APIConnectionError, APIStatusError
+            if isinstance(exc, APIConnectionError):
+                return True
+            if isinstance(exc, APIStatusError) and exc.status_code >= 500:
+                return True
+        except ImportError:
+            pass
+        return False
+
+    async def _llm_call_with_retry(self, client, description: str, **kwargs):
+        """Wrap client.chat.completions.create with retry logic."""
+        return await retry_async(
+            lambda: client.chat.completions.create(**kwargs),
+            logger,
+            description=description,
+            retryable=self._is_retryable_llm_error,
+        )
+
     async def _get_llm_settings(self, session: AsyncSession) -> dict[str, str]:
         """Load LLM settings from DB, falling back to config.py defaults."""
         from app.services.settings_service import settings_service
@@ -594,7 +618,8 @@ class ChatService:
         messages.append({"role": "user", "content": user_content})
 
         try:
-            response = await client.chat.completions.create(
+            response = await self._llm_call_with_retry(
+                client, "Chat query LLM call",
                 model=model,
                 messages=messages,
                 temperature=0.1,
@@ -729,7 +754,8 @@ class ChatService:
             f"```sql\n{sql}\n```"
         )
         try:
-            response = await client.chat.completions.create(
+            response = await self._llm_call_with_retry(
+                client, "SQL validation LLM call",
                 model=model,
                 messages=[{"role": "user", "content": validate_prompt}],
                 temperature=0.0,
@@ -764,7 +790,8 @@ class ChatService:
             ),
         })
         try:
-            response = await client.chat.completions.create(
+            response = await self._llm_call_with_retry(
+                client, "SQL nudge LLM call",
                 model=model,
                 messages=nudge_messages,
                 temperature=0.1,
@@ -795,7 +822,8 @@ class ChatService:
         })
 
         try:
-            response = await client.chat.completions.create(
+            response = await self._llm_call_with_retry(
+                client, "SQL retry-with-error LLM call",
                 model=model,
                 messages=retry_messages,
                 temperature=0.1,

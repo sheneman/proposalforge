@@ -7,6 +7,7 @@ Graph flow:
                 +--> match (loop back if >30% flagged, max 2 iterations)
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -24,6 +25,9 @@ from app.services.mcp_manager import mcp_manager
 from app.services.retry import retry_async
 
 logger = logging.getLogger(__name__)
+
+LLM_CONCURRENCY = 4
+_llm_semaphore = asyncio.Semaphore(LLM_CONCURRENCY)
 
 
 class WorkflowCancelledError(Exception):
@@ -273,6 +277,12 @@ async def _invoke_agent(agent_slug: str, user_message: str, run_id: int, node_na
             duration_ms=duration_ms,
         )
         raise
+
+
+async def _invoke_agent_limited(agent_slug: str, user_message: str, run_id: int, node_name: str, sequence: int) -> str:
+    """Invoke an agent's LLM with concurrency limited by semaphore."""
+    async with _llm_semaphore:
+        return await _invoke_agent(agent_slug, user_message, run_id, node_name, sequence)
 
 
 def _safe_json_parse(text: str) -> dict | list | None:
@@ -593,19 +603,18 @@ async def match_node(state: MatchmakingState) -> dict:
     r_map = {rp["id"]: rp for rp in researcher_profiles}
     o_map = {op["id"]: op for op in opportunity_profiles}
 
-    # Process in batches to avoid token limits
+    # Process in batches with parallel LLM calls
     batch_size = 10
     all_matches = []
 
     total_batches = (len(candidate_pairs) + batch_size - 1) // batch_size
-    for i in range(0, len(candidate_pairs), batch_size):
-        batch_num = i // batch_size + 1
+
+    async def _process_match_batch(batch, batch_num):
         await _check_cancel(run_id)
         await _emit_log(run_id, {
             "type": "info", "node": "match", "agent": "matchmaker",
-            "message": f"Match batch {batch_num}/{total_batches} ({len(candidate_pairs[i:i+batch_size])} pairs)",
+            "message": f"Match batch {batch_num}/{total_batches} ({len(batch)} pairs)",
         })
-        batch = candidate_pairs[i:i + batch_size]
 
         pairs_desc = []
         for pair in batch:
@@ -636,16 +645,35 @@ Provide specific justification for each.
 
 Respond with a JSON array of match objects."""
 
-        response = await _invoke_agent(
+        response = await _invoke_agent_limited(
             "matchmaker", prompt, run_id, "match",
-            4 + (i // batch_size) + (iteration * 100),
+            4 + (batch_num - 1) + (iteration * 100),
         )
 
         parsed = _safe_json_parse(response)
         if parsed and isinstance(parsed, list):
-            all_matches.extend(parsed)
+            return parsed
         elif parsed and isinstance(parsed, dict) and "matches" in parsed:
-            all_matches.extend(parsed["matches"])
+            return parsed["matches"]
+        return []
+
+    tasks = []
+    for i in range(0, len(candidate_pairs), batch_size):
+        batch_num = i // batch_size + 1
+        batch = candidate_pairs[i:i + batch_size]
+        tasks.append(_process_match_batch(batch, batch_num))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, WorkflowCancelledError):
+            raise result
+        if isinstance(result, Exception):
+            logger.warning("Match batch failed: %s", result)
+            continue
+        all_matches.extend(result)
+
+    await _check_cancel(run_id)
 
     # Normalize matches to ensure required fields
     raw_matches = []
@@ -682,19 +710,18 @@ async def critique_node(state: MatchmakingState) -> dict:
     if not raw_matches:
         return {"critiqued_matches": [], "status": "critique_complete"}
 
-    # Send matches to critic in batches
+    # Send matches to critic in parallel batches
     batch_size = 15
     all_critiqued = []
 
     total_batches = (len(raw_matches) + batch_size - 1) // batch_size
-    for i in range(0, len(raw_matches), batch_size):
-        batch_num = i // batch_size + 1
+
+    async def _process_critique_batch(batch, batch_num):
         await _check_cancel(run_id)
         await _emit_log(run_id, {
             "type": "info", "node": "critique", "agent": "critic",
-            "message": f"Critique batch {batch_num}/{total_batches} ({len(raw_matches[i:i+batch_size])} matches)",
+            "message": f"Critique batch {batch_num}/{total_batches} ({len(batch)} matches)",
         })
-        batch = raw_matches[i:i + batch_size]
 
         prompt = f"""Review these {len(batch)} matches for quality, score calibration, and justification strength.
 
@@ -709,16 +736,35 @@ For each match:
 
 Respond with a JSON array of reviewed matches."""
 
-        response = await _invoke_agent(
+        response = await _invoke_agent_limited(
             "critic", prompt, run_id, "critique",
-            50 + (i // batch_size),
+            50 + (batch_num - 1),
         )
 
         parsed = _safe_json_parse(response)
         if parsed and isinstance(parsed, list):
-            all_critiqued.extend(parsed)
+            return parsed
         elif parsed and isinstance(parsed, dict) and "reviews" in parsed:
-            all_critiqued.extend(parsed["reviews"])
+            return parsed["reviews"]
+        return []
+
+    tasks = []
+    for i in range(0, len(raw_matches), batch_size):
+        batch_num = i // batch_size + 1
+        batch = raw_matches[i:i + batch_size]
+        tasks.append(_process_critique_batch(batch, batch_num))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, WorkflowCancelledError):
+            raise result
+        if isinstance(result, Exception):
+            logger.warning("Critique batch failed: %s", result)
+            continue
+        all_critiqued.extend(result)
+
+    await _check_cancel(run_id)
 
     # Merge critic feedback with raw matches
     critiqued_matches = []
@@ -790,19 +836,18 @@ async def summarize_node(state: MatchmakingState) -> dict:
     if not worthy_matches:
         return {"final_matches": critiqued_matches, "status": "summarize_complete"}
 
-    # Process in batches
+    # Process in parallel batches
     batch_size = 20
     summaries_map = {}
 
     total_batches = (len(worthy_matches) + batch_size - 1) // batch_size
-    for i in range(0, len(worthy_matches), batch_size):
-        batch_num = i // batch_size + 1
+
+    async def _process_summary_batch(batch, batch_num):
         await _check_cancel(run_id)
         await _emit_log(run_id, {
             "type": "info", "node": "summarize", "agent": "summarizer",
-            "message": f"Summary batch {batch_num}/{total_batches} ({len(worthy_matches[i:i+batch_size])} matches)",
+            "message": f"Summary batch {batch_num}/{total_batches} ({len(batch)} matches)",
         })
-        batch = worthy_matches[i:i + batch_size]
 
         prompt = f"""Create concise 2-3 sentence summaries for these {len(batch)} researcher-opportunity matches.
 
@@ -813,16 +858,33 @@ Each summary should highlight the connection, strengths, and any caveats.
 
 Respond with a JSON array: [{{"researcher_id": X, "opportunity_id": Y, "summary": "..."}}]"""
 
-        response = await _invoke_agent(
+        response = await _invoke_agent_limited(
             "summarizer", prompt, run_id, "summarize",
-            70 + (i // batch_size),
+            70 + (batch_num - 1),
         )
 
         parsed = _safe_json_parse(response)
         if parsed and isinstance(parsed, list):
-            for s in parsed:
-                key = (s.get("researcher_id"), s.get("opportunity_id"))
-                summaries_map[key] = s.get("summary", "")
+            return parsed
+        return []
+
+    tasks = []
+    for i in range(0, len(worthy_matches), batch_size):
+        batch_num = i // batch_size + 1
+        batch = worthy_matches[i:i + batch_size]
+        tasks.append(_process_summary_batch(batch, batch_num))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, WorkflowCancelledError):
+            raise result
+        if isinstance(result, Exception):
+            logger.warning("Summary batch failed: %s", result)
+            continue
+        for s in result:
+            key = (s.get("researcher_id"), s.get("opportunity_id"))
+            summaries_map[key] = s.get("summary", "")
 
     # Merge summaries into matches
     final_matches = []

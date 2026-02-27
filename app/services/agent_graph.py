@@ -731,8 +731,8 @@ Respond with a JSON array of reviewed matches."""
         key = (m.get("researcher_id"), m.get("opportunity_id"))
         critique = critic_map.get(key, {})
 
-        # Use adjusted scores if critic provided them
-        adjusted = critique.get("adjusted_scores", {})
+        # Use adjusted scores if critic provided them (guard against None values)
+        adjusted = critique.get("adjusted_scores") or {}
         critiqued_matches.append({
             **m,
             "relevance_score": adjusted.get("relevance_score", m["relevance_score"]),

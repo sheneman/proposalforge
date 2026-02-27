@@ -145,8 +145,14 @@ class WorkflowService:
             await self._release_lock()
 
             async with async_session() as session:
+                # Include "failed" runs that have a checkpoint — they crashed
+                # mid-execution and should be retried automatically
                 stmt = select(WorkflowRun).where(
-                    WorkflowRun.status.in_(["running", "pending"])
+                    (WorkflowRun.status.in_(["running", "pending"]))
+                    | (
+                        (WorkflowRun.status == "failed")
+                        & (WorkflowRun.checkpoint_state.isnot(None))
+                    )
                 )
                 result = await session.execute(stmt)
                 interrupted = list(result.scalars().all())

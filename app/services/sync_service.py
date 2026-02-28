@@ -323,6 +323,13 @@ class SyncService:
                     program_title=aln.get("programTitle"),
                 ))
 
+            # Extract attachment metadata (lightweight, no downloads)
+            try:
+                from app.services.document_service import document_service
+                await document_service.extract_attachment_metadata(session, opp, detail)
+            except Exception as e:
+                logger.warning(f"Failed to extract attachment metadata for {opp_id}: {e}")
+
             return opp
         except Exception as e:
             logger.error(f"Error upserting opportunity: {e}", exc_info=True)

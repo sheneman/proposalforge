@@ -38,6 +38,10 @@ TIMEZONE_CHOICES = [
     "US/Hawaii",
 ]
 
+# Keys for OCR configuration
+OCR_METHOD_KEY = "ocr_method"
+OCR_ENDPOINT_URL_KEY = "ocr_endpoint_url"
+
 # Per-source scheduler keys
 GRANTS_SCHEDULER_ENABLED_KEY = "grants_scheduler_enabled"
 GRANTS_SCHEDULER_INTERVAL_KEY = "grants_scheduler_interval_hours"
@@ -158,6 +162,27 @@ class SettingsService:
         """Save the display timezone setting."""
         if timezone in TIMEZONE_CHOICES:
             await self.set(session, TIMEZONE_KEY, timezone)
+
+    # --- OCR Settings ---
+
+    async def get_ocr_settings(self, session: AsyncSession) -> dict[str, str]:
+        """Get OCR endpoint settings, falling back to config.py defaults."""
+        method = await self.get(session, OCR_METHOD_KEY)
+        endpoint_url = await self.get(session, OCR_ENDPOINT_URL_KEY)
+        return {
+            "method": method or app_settings.OCR_METHOD,
+            "endpoint_url": endpoint_url or app_settings.OCR_ENDPOINT_URL,
+        }
+
+    async def save_ocr_settings(
+        self,
+        session: AsyncSession,
+        method: str = "",
+        endpoint_url: str = "",
+    ) -> None:
+        """Save OCR settings to the database."""
+        await self.set(session, OCR_METHOD_KEY, method)
+        await self.set(session, OCR_ENDPOINT_URL_KEY, endpoint_url)
 
     # --- Per-source Scheduler Settings ---
 

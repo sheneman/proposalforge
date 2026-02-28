@@ -74,6 +74,7 @@ class Opportunity(Base):
     funding_instruments = relationship("OpportunityFundingInstrument", back_populates="opportunity", cascade="all, delete-orphan", lazy="selectin")
     funding_categories = relationship("OpportunityFundingCategory", back_populates="opportunity", cascade="all, delete-orphan", lazy="selectin")
     alns = relationship("OpportunityALN", back_populates="opportunity", cascade="all, delete-orphan", lazy="selectin")
+    documents = relationship("OpportunityDocument", back_populates="opportunity", cascade="all, delete-orphan", lazy="noload")
 
     __table_args__ = (
         Index("ix_opp_status_close", "status", "close_date"),

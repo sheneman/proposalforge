@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 SEARCH_URL = "https://api.grants.gov/v1/api/search2"
 FETCH_URL = "https://api.grants.gov/v1/api/fetchOpportunity"
+ATTACHMENT_DOWNLOAD_URL = "https://apply07.grants.gov/grantsws/rest/opportunity/att/download"
 
 PAGE_SIZE = 25  # Grants.gov API caps at 25 per request
 
@@ -85,6 +86,53 @@ class GrantsGovClient:
                 FETCH_URL,
                 {"opportunityId": opportunity_id},
             )
+
+    async def download_attachment(self, attachment_id: str, dest_path: str) -> bool:
+        """Download an attachment file from Grants.gov.
+
+        Args:
+            attachment_id: The attachment ID from synopsisAttachmentFolders.
+            dest_path: Local file path to save to.
+
+        Returns:
+            True if download succeeded, False otherwise.
+        """
+        import os
+        url = f"{ATTACHMENT_DOWNLOAD_URL}/{attachment_id}"
+
+        for attempt in range(MAX_RETRIES):
+            async with self._semaphore:
+                await self._throttle()
+                try:
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        async with client.stream("GET", url) as response:
+                            if response.status_code == 429:
+                                wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                                logger.warning(f"Rate limited downloading {attachment_id}, waiting {wait}s")
+                                await asyncio.sleep(wait)
+                                continue
+
+                            response.raise_for_status()
+
+                            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                            with open(dest_path, "wb") as f:
+                                async for chunk in response.aiter_bytes(chunk_size=8192):
+                                    f.write(chunk)
+
+                    logger.info(f"Downloaded attachment {attachment_id} to {dest_path}")
+                    return True
+
+                except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as e:
+                    wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                    logger.warning(f"Download error for {attachment_id}: {e}, retrying in {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+                except Exception as e:
+                    logger.error(f"Failed to download attachment {attachment_id}: {e}")
+                    return False
+
+        logger.error(f"Failed to download attachment {attachment_id} after {MAX_RETRIES} retries")
+        return False
 
     async def fetch_all_opportunities(
         self,

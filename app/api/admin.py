@@ -778,6 +778,117 @@ async def test_reranker_connection(request: Request, db: AsyncSession = Depends(
 
 
 # ====================================================================
+# Section 4: Model Endpoints — OCR / Document Processing
+# ====================================================================
+
+@router.get("/ocr", response_class=HTMLResponse)
+async def ocr_settings_view(request: Request, db: AsyncSession = Depends(get_db)):
+    ocr = await settings_service.get_ocr_settings(db)
+    return templates.TemplateResponse("partials/admin/ocr_settings.html", {
+        "request": request,
+        "ocr": ocr,
+        "saved": False,
+        "is_admin": _is_admin(request),
+    })
+
+
+@router.post("/ocr", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def save_ocr_settings(request: Request, db: AsyncSession = Depends(get_db)):
+    form = await request.form()
+    method = (form.get("method") or "dotsocr").strip()
+    endpoint_url = (form.get("endpoint_url") or "").strip()
+
+    await settings_service.save_ocr_settings(db, method=method, endpoint_url=endpoint_url)
+
+    ocr = await settings_service.get_ocr_settings(db)
+    return templates.TemplateResponse("partials/admin/ocr_settings.html", {
+        "request": request,
+        "ocr": ocr,
+        "saved": True,
+        "is_admin": _is_admin(request),
+    })
+
+
+@router.post("/ocr/test", dependencies=[Depends(require_admin)])
+async def test_ocr_connection(request: Request, db: AsyncSession = Depends(get_db)):
+    body = await request.json()
+    endpoint_url = (body.get("endpoint_url") or "").strip()
+
+    if not endpoint_url:
+        ocr = await settings_service.get_ocr_settings(db)
+        endpoint_url = ocr.get("endpoint_url", "")
+
+    if not endpoint_url:
+        return JSONResponse(content={
+            "success": False,
+            "message": "OCR endpoint URL must be configured first.",
+        })
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Try a simple connectivity check (GET or HEAD)
+            resp = await client.get(endpoint_url, follow_redirects=True)
+            return JSONResponse(content={
+                "success": True,
+                "message": f"Connected. Status: {resp.status_code}",
+            })
+    except Exception as e:
+        return JSONResponse(content={
+            "success": False,
+            "message": str(e)[:200],
+        })
+
+
+# ====================================================================
+# Document Processing Status & Trigger
+# ====================================================================
+
+@router.get("/doc-sync/status", response_class=HTMLResponse)
+async def doc_sync_status(request: Request, db: AsyncSession = Depends(get_db)):
+    from app.services.document_service import document_service
+    status = await document_service.get_processing_status()
+    counts = await document_service.get_document_counts()
+    tz = await settings_service.get_timezone(db)
+    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
+        "request": request,
+        "is_processing": status["is_processing"],
+        "stats": status["stats"],
+        "counts": counts,
+        "is_admin": _is_admin(request),
+        "tz": tz,
+    })
+
+
+@router.post("/doc-sync/trigger", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db)):
+    from app.services.document_service import document_service
+    if document_service.is_processing:
+        return HTMLResponse("<div class='alert alert-warning py-2'>Processing already in progress.</div>")
+
+    asyncio.create_task(document_service.process_pending_documents())
+
+    status = await document_service.get_processing_status()
+    counts = await document_service.get_document_counts()
+    tz = await settings_service.get_timezone(db)
+    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
+        "request": request,
+        "is_processing": True,
+        "stats": {"phase": "starting", "total": counts.get("pending", 0)},
+        "counts": counts,
+        "is_admin": _is_admin(request),
+        "tz": tz,
+    })
+
+
+@router.post("/doc-sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def cancel_doc_sync(request: Request, db: AsyncSession = Depends(get_db)):
+    from app.services.document_service import document_service
+    document_service.cancel_processing()
+    return HTMLResponse("<div class='alert alert-info py-2'>Cancellation requested...</div>")
+
+
+# ====================================================================
 # Section 5: App Settings (Timezone)
 # ====================================================================
 

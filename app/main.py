@@ -62,6 +62,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to sync agent definitions (non-fatal)")
 
+    # Ensure document storage directory exists
+    import os
+    os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
+    logger.info(f"Document storage at {settings.DOCUMENT_STORAGE_PATH}")
+
     # Clean up any orphaned "running" sync logs from prior crashes/restarts
     await sync_service._mark_stale_syncs()
 

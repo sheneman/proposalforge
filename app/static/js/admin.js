@@ -80,6 +80,31 @@ async function testEmbeddingConnection() {
     }
 }
 
+async function testOcrConnection() {
+    const result = document.getElementById('ocr-test-result');
+    result.innerHTML = '<span class="text-muted"><i class="bi bi-hourglass-split"></i> Testing...</span>';
+
+    const payload = {
+        endpoint_url: (document.getElementById('ocr-endpoint-url') || {}).value || '',
+    };
+
+    try {
+        const resp = await fetch('/admin/ocr/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            result.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> ' + data.message + '</span>';
+        } else {
+            result.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> ' + data.message + '</span>';
+        }
+    } catch (e) {
+        result.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Connection test failed</span>';
+    }
+}
+
 async function testRerankerConnection() {
     const result = document.getElementById('reranker-test-result');
     result.innerHTML = '<span class="text-muted"><i class="bi bi-hourglass-split"></i> Testing...</span>';

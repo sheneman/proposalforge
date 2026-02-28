@@ -33,6 +33,7 @@ from app.models.agent import (
     WorkflowStep,
     AgentMatch,
 )
+from app.models.document import OpportunityDocument, DocumentChunk
 
 __all__ = [
     "Agency",
@@ -64,4 +65,6 @@ __all__ = [
     "WorkflowRun",
     "WorkflowStep",
     "AgentMatch",
+    "OpportunityDocument",
+    "DocumentChunk",
 ]

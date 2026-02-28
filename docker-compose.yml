@@ -34,6 +34,21 @@ services:
       timeout: 5s
       retries: 5
 
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    ports:
+      - "8003:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    networks:
+      proposalforge_net:
+        ipv4_address: 10.100.0.6
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   web:
     build: .
     env_file: .env
@@ -41,10 +56,13 @@ services:
       - "8002:8000"
     volumes:
       - .:/app
+      - doc_data:/app/data/documents
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      chromadb:
         condition: service_healthy
     networks:
       proposalforge_net:
@@ -66,6 +84,8 @@ services:
 volumes:
   db_data:
   redis_data:
+  doc_data:
+  chroma_data:
 
 networks:
   proposalforge_net:

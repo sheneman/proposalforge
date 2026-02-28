@@ -1,0 +1,110 @@
+{% if is_processing %}
+<div class="d-flex align-items-center mb-3">
+    <span class="badge bg-primary fs-6 me-3">
+        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        Processing
+    </span>
+    <span class="text-muted">
+        {{ stats.get("phase", "starting") | title }} documents...
+    </span>
+</div>
+
+{% set total = stats.get("total", 0) %}
+{% set downloaded = stats.get("downloaded", 0) %}
+{% set ocr_done = stats.get("ocr_completed", 0) %}
+{% set embedded = stats.get("embedded", 0) %}
+{% set errors = stats.get("errors", 0) %}
+{% set processed = downloaded + ocr_done + embedded + errors %}
+{% set pct = ((processed / (total * 3) * 100) | round(1)) if total > 0 else 0 %}
+
+<div class="progress mb-3" style="height: 24px;">
+    <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
+         role="progressbar"
+         style="width: {{ pct }}%">
+        {{ pct }}%
+    </div>
+</div>
+
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold">{{ "{:,}".format(total) }}</div>
+        <small class="text-muted">Total Docs</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-info">{{ "{:,}".format(downloaded) }}</div>
+        <small class="text-muted">Downloaded</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-primary">{{ "{:,}".format(ocr_done) }}</div>
+        <small class="text-muted">OCR'd</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-success">{{ "{:,}".format(embedded) }}</div>
+        <small class="text-muted">Embedded</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
+        <small class="text-muted">Errors</small>
+    </div>
+</div>
+
+{% if is_admin %}
+<div class="text-end">
+    <button class="btn btn-danger btn-sm"
+            hx-post="/admin/doc-sync/cancel"
+            hx-target="#doc-sync-status"
+            hx-swap="innerHTML">
+        <i class="bi bi-stop-circle"></i> Cancel
+    </button>
+</div>
+{% endif %}
+
+{% else %}
+
+<div class="row text-center mb-3">
+    <div class="col">
+        <div class="fw-bold">{{ "{:,}".format(counts.get("total", 0)) }}</div>
+        <small class="text-muted">Total Docs</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-info">{{ "{:,}".format(counts.get("downloaded", 0)) }}</div>
+        <small class="text-muted">Downloaded</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-primary">{{ "{:,}".format(counts.get("ocr_completed", 0)) }}</div>
+        <small class="text-muted">OCR'd</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-success">{{ "{:,}".format(counts.get("embedded", 0)) }}</div>
+        <small class="text-muted">Embedded</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-danger">{{ "{:,}".format(counts.get("errors", 0)) }}</div>
+        <small class="text-muted">Errors</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold text-warning">{{ "{:,}".format(counts.get("pending", 0)) }}</div>
+        <small class="text-muted">Pending</small>
+    </div>
+</div>
+
+{% if stats.get("completed") %}
+<div class="text-muted small mb-3">
+    <i class="bi bi-check-circle text-success"></i> Last processing completed: {{ stats.get("completed", "") }}
+</div>
+{% endif %}
+
+{% if is_admin %}
+<div class="d-flex gap-2">
+    <button class="btn btn-primary btn-sm"
+            hx-post="/admin/doc-sync/trigger"
+            hx-target="#doc-sync-status"
+            hx-swap="innerHTML">
+        <i class="bi bi-play-circle"></i> Process Pending Documents
+    </button>
+</div>
+{% else %}
+<div class="text-muted small"><i class="bi bi-lock"></i> Log in to manage document processing</div>
+{% endif %}
+
+{% endif %}

@@ -1,0 +1,631 @@
+import asyncio
+import logging
+import os
+import re
+import uuid
+from datetime import datetime
+
+import httpx
+from sqlalchemy import select, or_, func, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.database import async_session
+from app.models.document import OpportunityDocument, DocumentChunk
+from app.services.grants_client import GrantsGovClient
+from app.services.settings_service import settings_service
+from app.services.cache_service import cache_service
+
+logger = logging.getLogger(__name__)
+
+REDIS_DOC_SYNC_KEY = "pf:doc_sync_stats"
+
+
+class DocumentService:
+    def __init__(self):
+        self.is_processing = False
+        self._cancel_requested = False
+        self.processing_stats: dict = {}
+        self._grants_client = GrantsGovClient()
+
+    async def extract_attachment_metadata(
+        self, session: AsyncSession, opp, detail: dict
+    ) -> int:
+        """Parse attachment metadata from fetchOpportunity response and upsert rows.
+
+        Returns the number of new documents created.
+        """
+        folders = detail.get("synopsisAttachmentFolders") or []
+        created = 0
+
+        for folder in folders:
+            folder_name = folder.get("folderName", "")
+            attachments = folder.get("attachments") or []
+
+            for att in attachments:
+                att_id = str(att.get("id", ""))
+                if not att_id:
+                    continue
+
+                # Check if already exists
+                stmt = select(OpportunityDocument).where(
+                    OpportunityDocument.attachment_id == att_id
+                )
+                result = await session.execute(stmt)
+                existing = result.scalar_one_or_none()
+
+                if existing:
+                    # Update metadata if changed
+                    existing.file_name = att.get("fileName", existing.file_name)
+                    existing.mime_type = att.get("mimeType", existing.mime_type)
+                    existing.file_size = att.get("fileSizeInBytes", existing.file_size)
+                    existing.file_description = att.get("description", existing.file_description)
+                    existing.folder_name = folder_name
+                    continue
+
+                doc = OpportunityDocument(
+                    opportunity_id=opp.id,
+                    attachment_id=att_id,
+                    file_name=att.get("fileName", "unknown"),
+                    mime_type=att.get("mimeType"),
+                    file_size=att.get("fileSizeInBytes"),
+                    file_description=att.get("description"),
+                    folder_name=folder_name,
+                    download_status="pending",
+                    ocr_status="pending",
+                    embed_status="pending",
+                )
+                session.add(doc)
+                created += 1
+
+        if created > 0:
+            await session.flush()
+
+        return created
+
+    async def process_pending_documents(self):
+        """Batch orchestrator: download, OCR, chunk, embed all pending documents."""
+        if self.is_processing:
+            logger.warning("Document processing already in progress")
+            return
+
+        self.is_processing = True
+        self._cancel_requested = False
+        self.processing_stats = {
+            "started": datetime.utcnow().isoformat(),
+            "total": 0,
+            "downloaded": 0,
+            "ocr_completed": 0,
+            "embedded": 0,
+            "errors": 0,
+            "phase": "starting",
+        }
+        await self._publish_stats()
+
+        try:
+            async with async_session() as session:
+                # Get OCR settings once
+                ocr_settings = await settings_service.get_ocr_settings(session)
+                embed_settings = await settings_service.get_embedding_settings(session)
+
+                # Query all docs with any pending status
+                stmt = select(OpportunityDocument).where(
+                    or_(
+                        OpportunityDocument.download_status == "pending",
+                        OpportunityDocument.ocr_status == "pending",
+                        OpportunityDocument.embed_status == "pending",
+                    )
+                )
+                result = await session.execute(stmt)
+                docs = list(result.scalars().all())
+
+            self.processing_stats["total"] = len(docs)
+            self.processing_stats["phase"] = "processing"
+            await self._publish_stats()
+
+            logger.info(f"Processing {len(docs)} pending documents")
+
+            batch_size = 10
+            for i in range(0, len(docs), batch_size):
+                if self._cancel_requested:
+                    logger.info("Document processing cancelled by user")
+                    self.processing_stats["cancelled"] = True
+                    break
+
+                batch = docs[i:i + batch_size]
+
+                for doc in batch:
+                    if self._cancel_requested:
+                        break
+
+                    try:
+                        async with async_session() as session:
+                            # Re-fetch to get current state
+                            stmt = select(OpportunityDocument).where(
+                                OpportunityDocument.id == doc.id
+                            )
+                            result = await session.execute(stmt)
+                            doc = result.scalar_one_or_none()
+                            if not doc:
+                                continue
+
+                            # Step 1: Download
+                            if doc.download_status == "pending":
+                                await self._download_document(doc, session)
+
+                            # Step 2: OCR
+                            if doc.download_status == "downloaded" and doc.ocr_status == "pending":
+                                await self._ocr_document(doc, ocr_settings, session)
+
+                            # Step 3: Chunk and embed
+                            if doc.ocr_status == "completed" and doc.embed_status == "pending":
+                                await self._embed_document(doc, embed_settings, session)
+
+                            await session.commit()
+                    except Exception as e:
+                        logger.error(f"Error processing document {doc.id}: {e}", exc_info=True)
+                        self.processing_stats["errors"] += 1
+                        try:
+                            async with async_session() as err_session:
+                                stmt = select(OpportunityDocument).where(
+                                    OpportunityDocument.id == doc.id
+                                )
+                                result = await err_session.execute(stmt)
+                                err_doc = result.scalar_one_or_none()
+                                if err_doc:
+                                    err_doc.error_message = str(e)[:2000]
+                                    await err_session.commit()
+                        except Exception:
+                            pass
+
+                    await self._publish_stats()
+
+            self.processing_stats["completed"] = datetime.utcnow().isoformat()
+            self.processing_stats["phase"] = "completed"
+
+        except Exception as e:
+            logger.error(f"Document processing failed: {e}", exc_info=True)
+            self.processing_stats["error"] = str(e)[:500]
+        finally:
+            self.is_processing = False
+            await self._publish_stats()
+
+    async def _download_document(self, doc: OpportunityDocument, session: AsyncSession):
+        """Download a single document from Grants.gov."""
+        safe_name = re.sub(r'[^\w\-.]', '_', doc.file_name)
+        dest_path = os.path.join(
+            settings.DOCUMENT_STORAGE_PATH,
+            str(doc.opportunity_id),
+            f"{doc.attachment_id}_{safe_name}",
+        )
+
+        success = await self._grants_client.download_attachment(doc.attachment_id, dest_path)
+
+        if success:
+            doc.local_path = dest_path
+            doc.download_status = "downloaded"
+            self.processing_stats["downloaded"] = self.processing_stats.get("downloaded", 0) + 1
+        else:
+            doc.download_status = "failed"
+            doc.error_message = "Download failed after retries"
+            self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
+
+    async def _ocr_document(self, doc: OpportunityDocument, ocr_settings: dict, session: AsyncSession):
+        """OCR a downloaded document to extract text."""
+        if not doc.local_path or not os.path.exists(doc.local_path):
+            doc.ocr_status = "failed"
+            doc.error_message = "Local file not found for OCR"
+            return
+
+        # Skip non-PDF files for OCR
+        mime = (doc.mime_type or "").lower()
+        name = (doc.file_name or "").lower()
+        if not (mime == "application/pdf" or name.endswith(".pdf")):
+            doc.ocr_status = "skipped"
+            return
+
+        method = ocr_settings.get("method", "dotsocr")
+
+        try:
+            if method == "dotsocr":
+                extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings)
+            elif method == "pymupdf":
+                extracted_text = await self._ocr_pymupdf(doc.local_path)
+            else:
+                doc.ocr_status = "failed"
+                doc.error_message = f"Unknown OCR method: {method}"
+                return
+
+            if extracted_text:
+                doc.ocr_status = "completed"
+                doc.extracted_text_length = len(extracted_text)
+                # Store text temporarily in error_message field? No, store in chunks later.
+                # We'll pass it through by writing a temp file
+                text_path = doc.local_path + ".txt"
+                with open(text_path, "w", encoding="utf-8") as f:
+                    f.write(extracted_text)
+                self.processing_stats["ocr_completed"] = self.processing_stats.get("ocr_completed", 0) + 1
+            else:
+                doc.ocr_status = "failed"
+                doc.error_message = "OCR returned empty text"
+
+        except Exception as e:
+            doc.ocr_status = "failed"
+            doc.error_message = f"OCR error: {str(e)[:500]}"
+            logger.error(f"OCR failed for document {doc.id}: {e}", exc_info=True)
+
+    async def _ocr_dotsocr(self, file_path: str, ocr_settings: dict) -> str | None:
+        """Send PDF to dotsocr endpoint, receive markdown."""
+        endpoint = ocr_settings.get("endpoint_url", settings.OCR_ENDPOINT_URL)
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            with open(file_path, "rb") as f:
+                files = {"file": (os.path.basename(file_path), f, "application/pdf")}
+                response = await client.post(endpoint, files=files)
+
+            response.raise_for_status()
+
+            # dotsocr returns markdown text
+            content_type = response.headers.get("content-type", "")
+            if "json" in content_type:
+                data = response.json()
+                return data.get("text") or data.get("markdown") or data.get("content", "")
+            else:
+                return response.text
+
+    async def _ocr_pymupdf(self, file_path: str) -> str | None:
+        """Extract text from PDF using PyMuPDF (local, no network)."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            import pymupdf
+            doc = pymupdf.open(file_path)
+            pages = []
+            for page in doc:
+                pages.append(page.get_text())
+            doc.close()
+            return "\n\n".join(pages)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _embed_document(self, doc: OpportunityDocument, embed_settings: dict, session: AsyncSession):
+        """Chunk extracted text, generate embeddings, store in ChromaDB."""
+        text_path = doc.local_path + ".txt"
+        if not os.path.exists(text_path):
+            doc.embed_status = "failed"
+            doc.error_message = "Extracted text file not found"
+            return
+
+        with open(text_path, "r", encoding="utf-8") as f:
+            full_text = f.read()
+
+        if not full_text.strip():
+            doc.embed_status = "failed"
+            doc.error_message = "Extracted text is empty"
+            return
+
+        base_url = embed_settings.get("base_url", "")
+        model = embed_settings.get("model", "")
+        api_key = embed_settings.get("api_key", "")
+
+        if not base_url or not model:
+            doc.embed_status = "failed"
+            doc.error_message = "Embedding endpoint not configured"
+            return
+
+        try:
+            # Chunk the text
+            chunks = self._chunk_text(full_text)
+
+            # Delete existing chunks for this document
+            await session.execute(
+                text("DELETE FROM document_chunks WHERE document_id = :doc_id"),
+                {"doc_id": doc.id},
+            )
+
+            # Generate embeddings in batches
+            from openai import AsyncOpenAI
+            embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+
+            all_embeddings = []
+            batch_size = 20
+            for i in range(0, len(chunks), batch_size):
+                batch_texts = [c["text"] for c in chunks[i:i + batch_size]]
+                response = await embed_client.embeddings.create(
+                    model=model,
+                    input=batch_texts,
+                    timeout=60,
+                )
+                all_embeddings.extend([d.embedding for d in response.data])
+
+            # Store in ChromaDB
+            import chromadb
+            chroma_client = chromadb.HttpClient(
+                host=settings.CHROMADB_HOST,
+                port=settings.CHROMADB_PORT,
+            )
+            collection = chroma_client.get_or_create_collection(
+                name="opportunity_documents",
+                metadata={"hnsw:space": "cosine"},
+            )
+
+            chroma_ids = []
+            chroma_embeddings = []
+            chroma_documents = []
+            chroma_metadatas = []
+
+            chunk_rows = []
+            for idx, chunk_data in enumerate(chunks):
+                chroma_id = f"doc_{doc.id}_chunk_{idx}_{uuid.uuid4().hex[:8]}"
+                chroma_ids.append(chroma_id)
+                chroma_embeddings.append(all_embeddings[idx])
+                chroma_documents.append(chunk_data["text"])
+                chroma_metadatas.append({
+                    "document_id": doc.id,
+                    "opportunity_id": doc.opportunity_id,
+                    "attachment_id": doc.attachment_id,
+                    "chunk_index": idx,
+                    "file_name": doc.file_name,
+                })
+
+                chunk_row = DocumentChunk(
+                    document_id=doc.id,
+                    chunk_index=idx,
+                    chunk_text=chunk_data["text"],
+                    char_offset=chunk_data["offset"],
+                    char_length=chunk_data["length"],
+                    chroma_id=chroma_id,
+                )
+                chunk_rows.append(chunk_row)
+
+            # Upsert to ChromaDB in batches
+            for i in range(0, len(chroma_ids), 100):
+                collection.upsert(
+                    ids=chroma_ids[i:i + 100],
+                    embeddings=chroma_embeddings[i:i + 100],
+                    documents=chroma_documents[i:i + 100],
+                    metadatas=chroma_metadatas[i:i + 100],
+                )
+
+            # Save chunk rows to MariaDB
+            for row in chunk_rows:
+                session.add(row)
+            await session.flush()
+
+            doc.embed_status = "completed"
+            doc.chunk_count = len(chunks)
+            self.processing_stats["embedded"] = self.processing_stats.get("embedded", 0) + 1
+
+        except Exception as e:
+            doc.embed_status = "failed"
+            doc.error_message = f"Embedding error: {str(e)[:500]}"
+            logger.error(f"Embedding failed for document {doc.id}: {e}", exc_info=True)
+
+    def _chunk_text(
+        self, text_content: str, chunk_size: int = 1000, overlap: int = 200
+    ) -> list[dict]:
+        """Split text at paragraph/sentence boundaries.
+
+        Returns list of {text, offset, length}.
+        """
+        if not text_content:
+            return []
+
+        # Split into paragraphs
+        paragraphs = re.split(r'\n\s*\n', text_content)
+
+        chunks = []
+        current_chunk = ""
+        current_offset = 0
+        pos = 0
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                pos += 2  # account for newlines
+                continue
+
+            # Find actual position of this paragraph in original text
+            para_start = text_content.find(para, pos)
+            if para_start == -1:
+                para_start = pos
+            pos = para_start + len(para)
+
+            if len(current_chunk) + len(para) + 1 > chunk_size and current_chunk:
+                chunks.append({
+                    "text": current_chunk.strip(),
+                    "offset": current_offset,
+                    "length": len(current_chunk.strip()),
+                })
+
+                # Overlap: take last overlap characters
+                if overlap > 0 and len(current_chunk) > overlap:
+                    # Find a sentence boundary near the overlap point
+                    overlap_text = current_chunk[-overlap:]
+                    sentence_break = overlap_text.find('. ')
+                    if sentence_break > 0:
+                        overlap_text = overlap_text[sentence_break + 2:]
+                    current_chunk = overlap_text + "\n\n" + para
+                    current_offset = para_start - len(overlap_text)
+                else:
+                    current_chunk = para
+                    current_offset = para_start
+            else:
+                if not current_chunk:
+                    current_offset = para_start
+                    current_chunk = para
+                else:
+                    current_chunk += "\n\n" + para
+
+        # Final chunk
+        if current_chunk.strip():
+            chunks.append({
+                "text": current_chunk.strip(),
+                "offset": current_offset,
+                "length": len(current_chunk.strip()),
+            })
+
+        return chunks
+
+    async def semantic_search(
+        self,
+        query: str,
+        n_results: int = 10,
+        opportunity_id: int | None = None,
+    ) -> list[dict]:
+        """Search ChromaDB for relevant document chunks.
+
+        Returns list of {chunk_text, document_id, opportunity_id, file_name, score}.
+        """
+        async with async_session() as session:
+            embed_settings = await settings_service.get_embedding_settings(session)
+
+        base_url = embed_settings.get("base_url", "")
+        model = embed_settings.get("model", "")
+        api_key = embed_settings.get("api_key", "")
+
+        if not base_url or not model:
+            return []
+
+        try:
+            from openai import AsyncOpenAI
+            embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+            response = await embed_client.embeddings.create(
+                model=model,
+                input=query,
+                timeout=30,
+            )
+            query_embedding = response.data[0].embedding
+
+            import chromadb
+            chroma_client = chromadb.HttpClient(
+                host=settings.CHROMADB_HOST,
+                port=settings.CHROMADB_PORT,
+            )
+            collection = chroma_client.get_or_create_collection(
+                name="opportunity_documents",
+                metadata={"hnsw:space": "cosine"},
+            )
+
+            where_filter = None
+            if opportunity_id is not None:
+                where_filter = {"opportunity_id": opportunity_id}
+
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                where=where_filter,
+                include=["documents", "metadatas", "distances"],
+            )
+
+            items = []
+            if results and results.get("documents"):
+                docs = results["documents"][0]
+                metas = results["metadatas"][0]
+                distances = results["distances"][0]
+
+                for doc_text, meta, dist in zip(docs, metas, distances):
+                    items.append({
+                        "chunk_text": doc_text,
+                        "document_id": meta.get("document_id"),
+                        "opportunity_id": meta.get("opportunity_id"),
+                        "file_name": meta.get("file_name"),
+                        "score": 1.0 - dist,  # cosine distance to similarity
+                    })
+
+            return items
+
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}", exc_info=True)
+            return []
+
+    def cancel_processing(self):
+        """Request cancellation of document processing."""
+        self._cancel_requested = True
+
+    async def get_processing_status(self) -> dict:
+        """Get current processing status, checking Redis for cross-worker state."""
+        if self.is_processing:
+            return {"is_processing": True, "stats": self.processing_stats}
+
+        # Check Redis for stats from another worker
+        shared = await self._get_shared_stats()
+        if shared:
+            return {"is_processing": False, "stats": shared}
+
+        return {"is_processing": False, "stats": self.processing_stats}
+
+    async def get_document_counts(self) -> dict:
+        """Get aggregate counts for the admin dashboard."""
+        async with async_session() as session:
+            total = await session.execute(
+                select(func.count(OpportunityDocument.id))
+            )
+            downloaded = await session.execute(
+                select(func.count(OpportunityDocument.id)).where(
+                    OpportunityDocument.download_status == "downloaded"
+                )
+            )
+            ocr_completed = await session.execute(
+                select(func.count(OpportunityDocument.id)).where(
+                    OpportunityDocument.ocr_status == "completed"
+                )
+            )
+            embedded = await session.execute(
+                select(func.count(OpportunityDocument.id)).where(
+                    OpportunityDocument.embed_status == "completed"
+                )
+            )
+            errors = await session.execute(
+                select(func.count(OpportunityDocument.id)).where(
+                    or_(
+                        OpportunityDocument.download_status == "failed",
+                        OpportunityDocument.ocr_status == "failed",
+                        OpportunityDocument.embed_status == "failed",
+                    )
+                )
+            )
+            pending = await session.execute(
+                select(func.count(OpportunityDocument.id)).where(
+                    or_(
+                        OpportunityDocument.download_status == "pending",
+                        OpportunityDocument.ocr_status == "pending",
+                        OpportunityDocument.embed_status == "pending",
+                    )
+                )
+            )
+
+            return {
+                "total": total.scalar() or 0,
+                "downloaded": downloaded.scalar() or 0,
+                "ocr_completed": ocr_completed.scalar() or 0,
+                "embedded": embedded.scalar() or 0,
+                "errors": errors.scalar() or 0,
+                "pending": pending.scalar() or 0,
+            }
+
+    async def _publish_stats(self):
+        """Publish processing stats to Redis for cross-worker visibility."""
+        try:
+            import json
+            await cache_service.client.set(
+                REDIS_DOC_SYNC_KEY,
+                json.dumps(self.processing_stats),
+                ex=300,
+            )
+        except Exception:
+            pass
+
+    async def _get_shared_stats(self) -> dict | None:
+        """Read processing stats from Redis."""
+        try:
+            import json
+            data = await cache_service.client.get(REDIS_DOC_SYNC_KEY)
+            if data:
+                return json.loads(data)
+        except Exception:
+            pass
+        return None
+
+
+document_service = DocumentService()

@@ -35,6 +35,18 @@
                             </div>
                         </div>
                         <hr>
+                        <!-- Document Processing -->
+                        <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-pdf"></i> Document Processing</h6>
+                        <div id="doc-sync-status"
+                             hx-get="/admin/doc-sync/status"
+                             hx-trigger="load, every 3s"
+                             hx-swap="innerHTML">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                                <span class="text-muted ms-2">Loading...</span>
+                            </div>
+                        </div>
+                        <hr>
                         <!-- Data health -->
                         <h6 class="text-muted mb-2"><i class="bi bi-heart-pulse"></i> Data Health</h6>
                         <div id="data-health-grants"
@@ -178,6 +190,20 @@
         <h6 class="fw-bold mb-3"><i class="bi bi-vector-pen"></i> Embedding Endpoint</h6>
         <div id="embedding-settings"
              hx-get="/admin/embedding"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="text-center py-3">
+                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                <span class="text-muted ms-2">Loading...</span>
+            </div>
+        </div>
+
+        <hr>
+
+        <!-- OCR / Document Processing -->
+        <h6 class="fw-bold mb-3"><i class="bi bi-file-earmark-text"></i> OCR / Document Processing</h6>
+        <div id="ocr-settings"
+             hx-get="/admin/ocr"
              hx-trigger="load"
              hx-swap="innerHTML">
             <div class="text-center py-3">

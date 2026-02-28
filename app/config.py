@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     VERSO_API_URL: str = "https://api-na.hosted.exlibrisgroup.com/esploro/v1"
     VERSO_API_KEY: str = ""
 
+    # Document processing (RFP ingestion)
+    DOCUMENT_STORAGE_PATH: str = "/app/data/documents"
+    OCR_ENDPOINT_URL: str = "https://dotsocr.nkn.uidaho.edu/dotsocr"
+    OCR_METHOD: str = "dotsocr"  # dotsocr | pymupdf
+    CHROMADB_HOST: str = "chromadb"
+    CHROMADB_PORT: int = 8000
+
     class Config:
         env_file = ".env"
         extra = "ignore"

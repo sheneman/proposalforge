@@ -219,12 +219,25 @@ class DocumentService:
                                 if doc.download_status == "downloaded" and doc.ocr_status == "pending":
                                     await self._ocr_document(doc, ocr_settings, session, ocr_client=shared_ocr_client)
 
+                                # Skip embedding for unsupported formats
+                                if doc.ocr_status == "skipped" and doc.embed_status == "pending":
+                                    doc.embed_status = "skipped"
+
                                 if doc.ocr_status == "completed" and doc.embed_status == "pending":
                                     await self._embed_document(
                                         doc, embed_settings, ocr_settings, session,
                                         embed_client=shared_embed_client,
                                         chroma_collection=shared_chroma_collection,
                                     )
+
+                                # Clear stale error from previous failed attempts
+                                all_done = (
+                                    doc.download_status == "downloaded"
+                                    and doc.ocr_status in ("completed", "skipped")
+                                    and doc.embed_status in ("completed", "skipped")
+                                )
+                                if all_done and doc.error_message:
+                                    doc.error_message = None
 
                                 await session.commit()
                             break  # Success
@@ -297,49 +310,84 @@ class DocumentService:
             doc.error_message = "Download failed after retries"
             self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
 
+    # File extensions that can be extracted
+    _PDF_EXTS = {".pdf"}
+    _DOCX_EXTS = {".docx"}
+    _DOC_EXTS = {".doc"}
+    _XLSX_EXTS = {".xlsx", ".xlsm"}
+    _XLS_EXTS = {".xls"}
+    _PPTX_EXTS = {".pptx"}
+    _HTML_EXTS = {".html", ".htm"}
+    _TEXT_EXTS = {".txt", ".csv", ".md"}
+    _RTF_EXTS = {".rtf"}
+    _UNSUPPORTED_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".exe", ".msi", ".img", ".iso"}
+
     async def _ocr_document(self, doc: OpportunityDocument, ocr_settings: dict, session: AsyncSession, ocr_client: httpx.AsyncClient | None = None):
-        """OCR a downloaded document to extract text."""
+        """Extract text from a downloaded document (PDF via OCR, others via direct extraction)."""
         if not doc.local_path or not os.path.exists(doc.local_path):
             doc.ocr_status = "failed"
             doc.error_message = "Local file not found for OCR"
             return
 
-        # Skip non-PDF files for OCR
-        mime = (doc.mime_type or "").lower()
         name = (doc.file_name or "").lower()
-        if not (mime == "application/pdf" or name.endswith(".pdf")):
-            doc.ocr_status = "skipped"
-            return
+        ext = os.path.splitext(name)[1]
 
-        method = ocr_settings.get("method", "dotsocr")
-
+        # Route by file extension
         try:
-            if method == "dotsocr":
-                extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
-            elif method == "pymupdf":
-                extracted_text = await self._ocr_pymupdf(doc.local_path)
-            else:
-                doc.ocr_status = "failed"
-                doc.error_message = f"Unknown OCR method: {method}"
+            if ext in self._PDF_EXTS:
+                method = ocr_settings.get("method", "dotsocr")
+                if method == "dotsocr":
+                    extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
+                elif method == "pymupdf":
+                    extracted_text = await self._ocr_pymupdf(doc.local_path)
+                else:
+                    doc.ocr_status = "failed"
+                    doc.error_message = f"Unknown OCR method: {method}"
+                    return
+            elif ext in self._DOCX_EXTS:
+                extracted_text = await self._extract_docx(doc.local_path)
+            elif ext in self._DOC_EXTS:
+                extracted_text = await self._extract_doc(doc.local_path)
+            elif ext in self._XLSX_EXTS:
+                extracted_text = await self._extract_xlsx(doc.local_path)
+            elif ext in self._XLS_EXTS:
+                extracted_text = await self._extract_xls(doc.local_path)
+            elif ext in self._PPTX_EXTS:
+                extracted_text = await self._extract_pptx(doc.local_path)
+            elif ext in self._HTML_EXTS:
+                extracted_text = await self._extract_html(doc.local_path)
+            elif ext in self._TEXT_EXTS:
+                extracted_text = await self._extract_text(doc.local_path)
+            elif ext in self._RTF_EXTS:
+                extracted_text = await self._extract_rtf(doc.local_path)
+            elif ext in self._UNSUPPORTED_EXTS:
+                doc.ocr_status = "skipped"
+                doc.embed_status = "skipped"
                 return
+            else:
+                # Unknown extension — try plain text, fall back to skip
+                try:
+                    extracted_text = await self._extract_text(doc.local_path)
+                except Exception:
+                    doc.ocr_status = "skipped"
+                    doc.embed_status = "skipped"
+                    return
 
             if extracted_text:
                 doc.ocr_status = "completed"
                 doc.extracted_text_length = len(extracted_text)
-                # Store text temporarily in error_message field? No, store in chunks later.
-                # We'll pass it through by writing a temp file
                 text_path = doc.local_path + ".txt"
                 with open(text_path, "w", encoding="utf-8") as f:
                     f.write(extracted_text)
                 self.processing_stats["ocr_completed"] = self.processing_stats.get("ocr_completed", 0) + 1
             else:
                 doc.ocr_status = "failed"
-                doc.error_message = "OCR returned empty text"
+                doc.error_message = "Extraction returned empty text"
 
         except Exception as e:
             doc.ocr_status = "failed"
-            doc.error_message = f"OCR error: {str(e)[:500]}"
-            logger.error(f"OCR failed for document {doc.id}: {e}", exc_info=True)
+            doc.error_message = f"Extraction error: {str(e)[:500]}"
+            logger.error(f"Text extraction failed for document {doc.id}: {e}", exc_info=True)
 
     async def _ocr_dotsocr(self, file_path: str, ocr_settings: dict, client: httpx.AsyncClient | None = None) -> str | None:
         """Send PDF to dotsocr endpoint, receive markdown."""
@@ -378,6 +426,125 @@ class DocumentService:
                 pages.append(page.get_text())
             doc.close()
             return "\n\n".join(pages)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_docx(self, file_path: str) -> str | None:
+        """Extract text from .docx using python-docx."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            from docx import Document
+            doc = Document(file_path)
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            return "\n\n".join(paragraphs)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_doc(self, file_path: str) -> str | None:
+        """Extract text from legacy .doc using antiword."""
+        proc = await asyncio.create_subprocess_exec(
+            "antiword", file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"antiword failed: {stderr.decode(errors='replace')[:200]}")
+        return stdout.decode("utf-8", errors="replace")
+
+    async def _extract_xlsx(self, file_path: str) -> str | None:
+        """Extract text from .xlsx/.xlsm using openpyxl."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            from openpyxl import load_workbook
+            wb = load_workbook(file_path, read_only=True, data_only=True)
+            parts = []
+            for ws in wb.worksheets:
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) if c is not None else "" for c in row]
+                    if any(cells):
+                        rows.append("\t".join(cells))
+                if rows:
+                    parts.append(f"[Sheet: {ws.title}]\n" + "\n".join(rows))
+            wb.close()
+            return "\n\n".join(parts)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_xls(self, file_path: str) -> str | None:
+        """Extract text from legacy .xls using xlrd."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            import xlrd
+            wb = xlrd.open_workbook(file_path)
+            parts = []
+            for sheet in wb.sheets():
+                rows = []
+                for rx in range(sheet.nrows):
+                    cells = [str(sheet.cell_value(rx, cx)) for cx in range(sheet.ncols)]
+                    if any(cells):
+                        rows.append("\t".join(cells))
+                if rows:
+                    parts.append(f"[Sheet: {sheet.name}]\n" + "\n".join(rows))
+            return "\n\n".join(parts)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_pptx(self, file_path: str) -> str | None:
+        """Extract text from .pptx using python-pptx."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            from pptx import Presentation
+            prs = Presentation(file_path)
+            parts = []
+            for slide_num, slide in enumerate(prs.slides, 1):
+                texts = []
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            if para.text.strip():
+                                texts.append(para.text.strip())
+                if texts:
+                    parts.append(f"[Slide {slide_num}]\n" + "\n".join(texts))
+            return "\n\n".join(parts)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_html(self, file_path: str) -> str | None:
+        """Extract text from .html/.htm using BeautifulSoup."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            from bs4 import BeautifulSoup
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                soup = BeautifulSoup(f.read(), "html.parser")
+            return soup.get_text(separator="\n", strip=True)
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_text(self, file_path: str) -> str | None:
+        """Read plain text files (.txt, .csv, .md)."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _extract_rtf(self, file_path: str) -> str | None:
+        """Extract text from .rtf using striprtf."""
+        loop = asyncio.get_event_loop()
+
+        def _extract():
+            from striprtf.striprtf import rtf_to_text
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                return rtf_to_text(f.read())
 
         return await loop.run_in_executor(None, _extract)
 
@@ -532,6 +699,44 @@ class DocumentService:
         current_offset = 0
         pos = 0
 
+        def _split_oversized(paragraph: str, max_tokens: int) -> list[str]:
+            """Split a paragraph that exceeds max_tokens into smaller pieces."""
+            # Try sentence splitting first
+            sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+            if len(sentences) <= 1:
+                # Single sentence — hard-truncate by tokens
+                tokens = enc.encode(paragraph, disallowed_special=())
+                result = []
+                for i in range(0, len(tokens), max_tokens):
+                    result.append(enc.decode(tokens[i:i + max_tokens]))
+                return result
+
+            pieces = []
+            current = []
+            current_tok = 0
+            for sent in sentences:
+                sent_tok = _token_len(sent)
+                if sent_tok > max_tokens:
+                    # Flush current
+                    if current:
+                        pieces.append(" ".join(current))
+                        current = []
+                        current_tok = 0
+                    # Hard-truncate the oversized sentence
+                    tokens = enc.encode(sent, disallowed_special=())
+                    for i in range(0, len(tokens), max_tokens):
+                        pieces.append(enc.decode(tokens[i:i + max_tokens]))
+                elif current_tok + sent_tok > max_tokens and current:
+                    pieces.append(" ".join(current))
+                    current = [sent]
+                    current_tok = sent_tok
+                else:
+                    current.append(sent)
+                    current_tok += sent_tok
+            if current:
+                pieces.append(" ".join(current))
+            return pieces
+
         for para in paragraphs:
             para = para.strip()
             if not para:
@@ -544,6 +749,31 @@ class DocumentService:
             pos = para_start + len(para)
 
             para_tokens = _token_len(para)
+
+            # If a single paragraph exceeds chunk_size, split it
+            if para_tokens > chunk_size:
+                # Flush current chunk first
+                if current_paras:
+                    chunk_text = "\n\n".join(current_paras).strip()
+                    chunks.append({
+                        "text": chunk_text,
+                        "offset": current_offset,
+                        "length": len(chunk_text),
+                    })
+                    current_paras = []
+                    current_tokens = 0
+
+                sub_parts = _split_oversized(para, chunk_size)
+                sub_offset = para_start
+                for sp in sub_parts:
+                    chunks.append({
+                        "text": sp,
+                        "offset": sub_offset,
+                        "length": len(sp),
+                    })
+                    sub_offset += len(sp)
+                current_offset = pos
+                continue
 
             if current_tokens + para_tokens > chunk_size and current_paras:
                 chunk_text = "\n\n".join(current_paras).strip()

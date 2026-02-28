@@ -214,9 +214,10 @@ async def export_run_matches_csv(run_id: int, db: AsyncSession = Depends(get_db)
             m.summary or "",
         ])
 
+    csv_bytes = "\ufeff" + output.getvalue()  # UTF-8 BOM for Excel
     return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
+        iter([csv_bytes.encode("utf-8")]),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename=matches_run_{run_id}.csv"},
     )
 

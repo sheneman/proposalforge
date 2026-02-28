@@ -611,6 +611,32 @@ class DocumentService:
                 "pending": pending.scalar() or 0,
             }
 
+    async def get_recent_errors(self, limit: int = 20) -> list[dict]:
+        """Get recent document processing errors for the admin UI."""
+        async with async_session() as session:
+            stmt = (
+                select(OpportunityDocument)
+                .where(OpportunityDocument.error_message.is_not(None))
+                .order_by(OpportunityDocument.updated_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            docs = result.scalars().all()
+
+            return [
+                {
+                    "id": doc.id,
+                    "file_name": doc.file_name,
+                    "attachment_id": doc.attachment_id,
+                    "download_status": doc.download_status,
+                    "ocr_status": doc.ocr_status,
+                    "embed_status": doc.embed_status,
+                    "error_message": doc.error_message,
+                    "updated_at": doc.updated_at.isoformat() if doc.updated_at else "",
+                }
+                for doc in docs
+            ]
+
     async def _publish_stats(self):
         """Publish processing stats to Redis for cross-worker visibility."""
         try:

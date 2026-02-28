@@ -88,6 +88,23 @@
     </div>
 </div>
 
+{% if counts.get("errors", 0) > 0 %}
+<div class="mb-3">
+    <a class="small text-danger" data-bs-toggle="collapse" href="#doc-error-details" role="button">
+        <i class="bi bi-exclamation-triangle"></i> Show {{ counts.get("errors", 0) }} error(s)
+    </a>
+    <div class="collapse mt-2" id="doc-error-details">
+        <div hx-get="/admin/doc-sync/errors"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="text-center py-2">
+                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% if stats.get("completed") %}
 <div class="text-muted small mb-3">
     <i class="bi bi-check-circle text-success"></i> Last processing completed: {{ stats.get("completed", "") }}

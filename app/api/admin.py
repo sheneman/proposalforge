@@ -888,6 +888,16 @@ async def cancel_doc_sync(request: Request, db: AsyncSession = Depends(get_db)):
     return HTMLResponse("<div class='alert alert-info py-2'>Cancellation requested...</div>")
 
 
+@router.get("/doc-sync/errors", response_class=HTMLResponse)
+async def doc_sync_errors(request: Request, db: AsyncSession = Depends(get_db)):
+    from app.services.document_service import document_service
+    errors = await document_service.get_recent_errors()
+    return templates.TemplateResponse("partials/admin/doc_sync_errors.html", {
+        "request": request,
+        "errors": errors,
+    })
+
+
 # ====================================================================
 # Section 5: App Settings (Timezone)
 # ====================================================================

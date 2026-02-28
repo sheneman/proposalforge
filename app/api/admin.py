@@ -870,19 +870,26 @@ async def doc_sync_status(request: Request, db: AsyncSession = Depends(get_db)):
 @router.post("/doc-sync/trigger", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.document_service import document_service
-    if document_service.is_processing:
+    status = await document_service.get_processing_status()
+    if document_service.is_processing or status.get("is_processing"):
         return HTMLResponse("<div class='alert alert-warning py-2'>Processing already in progress.</div>")
 
-    # Clear stale Redis stats before starting so other workers see "processing" immediately
+    # Write initial "processing" state to Redis so ALL workers see it immediately
     from app.services.cache_service import cache_service
+    import json as _json
+    counts = await document_service.get_document_counts()
+    initial_stats = {
+        "is_processing": True,
+        "phase": "starting",
+        "total": counts.get("pending", 0),
+        "downloaded": 0, "ocr_completed": 0, "embedded": 0, "errors": 0,
+    }
     try:
-        await cache_service.client.delete("pf:doc_sync_stats")
+        await cache_service.client.set("pf:doc_sync_stats", _json.dumps(initial_stats), ex=300)
     except Exception:
         pass
 
     asyncio.create_task(document_service.process_pending_documents())
-
-    counts = await document_service.get_document_counts()
     tz = await settings_service.get_timezone(db)
     return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
         "request": request,

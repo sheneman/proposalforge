@@ -587,11 +587,8 @@ class DocumentService:
         self._cancel_requested = True
 
     async def get_processing_status(self) -> dict:
-        """Get current processing status, checking Redis for cross-worker state."""
-        if self.is_processing:
-            return {"is_processing": True, "stats": self.processing_stats}
-
-        # Check Redis for stats from another worker
+        """Get current processing status. Redis is the single source of truth."""
+        # Always check Redis first — it's shared across all workers
         shared = await self._get_shared_stats()
         if shared:
             return {
@@ -599,7 +596,11 @@ class DocumentService:
                 "stats": shared,
             }
 
-        return {"is_processing": False, "stats": self.processing_stats}
+        # No Redis data — fall back to local state (single worker / dev mode)
+        if self.is_processing:
+            return {"is_processing": True, "stats": self.processing_stats}
+
+        return {"is_processing": False, "stats": {}}
 
     async def get_document_counts(self) -> dict:
         """Get aggregate counts for the admin dashboard."""

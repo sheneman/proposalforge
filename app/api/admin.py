@@ -885,7 +885,7 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
         "downloaded": 0, "ocr_completed": 0, "embedded": 0, "errors": 0,
     }
     try:
-        pipe = cache_service.client.pipeline()
+        pipe = cache_service._redis.pipeline()
         pipe.set("pf:doc_processing", "1", ex=300)
         pipe.set("pf:doc_sync_stats", _json.dumps(initial_stats), ex=300)
         await pipe.execute()

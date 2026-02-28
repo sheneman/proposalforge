@@ -593,7 +593,7 @@ class DocumentService:
         is_active = False
         flag = None
         try:
-            flag = await cache_service.client.get(REDIS_DOC_PROCESSING_FLAG)
+            flag = await cache_service._redis.get(REDIS_DOC_PROCESSING_FLAG)
             is_active = flag == b"1" or flag == "1"
         except Exception as e:
             logger.warning(f"Redis flag check failed: {e}, falling back to local state")
@@ -687,7 +687,7 @@ class DocumentService:
         try:
             import json
             payload = {**self.processing_stats, "is_processing": self.is_processing}
-            pipe = cache_service.client.pipeline()
+            pipe = cache_service._redis.pipeline()
             pipe.set(REDIS_DOC_SYNC_KEY, json.dumps(payload), ex=300)
             # Separate atomic flag — simple string, no JSON
             if self.is_processing:
@@ -702,7 +702,7 @@ class DocumentService:
         """Read processing stats from Redis."""
         try:
             import json
-            data = await cache_service.client.get(REDIS_DOC_SYNC_KEY)
+            data = await cache_service._redis.get(REDIS_DOC_SYNC_KEY)
             if data:
                 return json.loads(data)
         except Exception:

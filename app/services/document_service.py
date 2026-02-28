@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import async_session
 from app.models.document import OpportunityDocument, DocumentChunk
+from app.models.opportunity import Opportunity
 from app.services.grants_client import GrantsGovClient
 from app.services.settings_service import settings_service
 from app.services.cache_service import cache_service
@@ -123,12 +124,36 @@ class DocumentService:
                 await session.commit()
                 logger.info("Reset failed documents to pending")
 
-                # Query all docs with any pending status
-                stmt = select(OpportunityDocument).where(
-                    or_(
-                        OpportunityDocument.download_status == "pending",
-                        OpportunityDocument.ocr_status == "pending",
-                        OpportunityDocument.embed_status == "pending",
+                # Delete documents belonging to archived opportunities
+                archived_docs = await session.execute(
+                    select(OpportunityDocument.id)
+                    .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
+                    .where(Opportunity.status == "archived")
+                )
+                archived_ids = [row[0] for row in archived_docs.all()]
+                if archived_ids:
+                    await session.execute(
+                        text("DELETE FROM document_chunks WHERE document_id IN :ids"),
+                        {"ids": archived_ids},
+                    )
+                    await session.execute(
+                        text("DELETE FROM opportunity_documents WHERE id IN :ids"),
+                        {"ids": archived_ids},
+                    )
+                    await session.commit()
+                    logger.info(f"Deleted {len(archived_ids)} documents from archived opportunities")
+
+                # Query pending docs, excluding archived opportunities
+                stmt = (
+                    select(OpportunityDocument)
+                    .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
+                    .where(
+                        Opportunity.status != "archived",
+                        or_(
+                            OpportunityDocument.download_status == "pending",
+                            OpportunityDocument.ocr_status == "pending",
+                            OpportunityDocument.embed_status == "pending",
+                        ),
                     )
                 )
                 result = await session.execute(stmt)
@@ -616,43 +641,36 @@ class DocumentService:
         return {"is_processing": is_active, "stats": stats}
 
     async def get_document_counts(self) -> dict:
-        """Get aggregate counts for the admin dashboard."""
+        """Get aggregate counts for the admin dashboard (excludes archived opportunities)."""
         async with async_session() as session:
-            total = await session.execute(
+            base = (
                 select(func.count(OpportunityDocument.id))
+                .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
+                .where(Opportunity.status != "archived")
             )
+            total = await session.execute(base)
             downloaded = await session.execute(
-                select(func.count(OpportunityDocument.id)).where(
-                    OpportunityDocument.download_status == "downloaded"
-                )
+                base.where(OpportunityDocument.download_status == "downloaded")
             )
             ocr_completed = await session.execute(
-                select(func.count(OpportunityDocument.id)).where(
-                    OpportunityDocument.ocr_status == "completed"
-                )
+                base.where(OpportunityDocument.ocr_status == "completed")
             )
             embedded = await session.execute(
-                select(func.count(OpportunityDocument.id)).where(
-                    OpportunityDocument.embed_status == "completed"
-                )
+                base.where(OpportunityDocument.embed_status == "completed")
             )
             errors = await session.execute(
-                select(func.count(OpportunityDocument.id)).where(
-                    or_(
-                        OpportunityDocument.download_status == "failed",
-                        OpportunityDocument.ocr_status == "failed",
-                        OpportunityDocument.embed_status == "failed",
-                    )
-                )
+                base.where(or_(
+                    OpportunityDocument.download_status == "failed",
+                    OpportunityDocument.ocr_status == "failed",
+                    OpportunityDocument.embed_status == "failed",
+                ))
             )
             pending = await session.execute(
-                select(func.count(OpportunityDocument.id)).where(
-                    or_(
-                        OpportunityDocument.download_status == "pending",
-                        OpportunityDocument.ocr_status == "pending",
-                        OpportunityDocument.embed_status == "pending",
-                    )
-                )
+                base.where(or_(
+                    OpportunityDocument.download_status == "pending",
+                    OpportunityDocument.ocr_status == "pending",
+                    OpportunityDocument.embed_status == "pending",
+                ))
             )
 
             return {

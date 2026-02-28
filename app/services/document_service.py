@@ -175,6 +175,24 @@ class DocumentService:
 
             logger.info(f"Processing {len(docs)} pending documents with {num_workers} workers")
 
+            # Create shared clients to avoid exhausting file descriptors
+            import chromadb
+            from openai import AsyncOpenAI
+
+            base_url = embed_settings.get("base_url", "")
+            model = embed_settings.get("model", "")
+            api_key = embed_settings.get("api_key", "")
+            shared_embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed") if base_url and model else None
+            shared_chroma_client = chromadb.HttpClient(
+                host=settings.CHROMADB_HOST,
+                port=settings.CHROMADB_PORT,
+            )
+            shared_chroma_collection = shared_chroma_client.get_or_create_collection(
+                name="opportunity_documents",
+                metadata={"hnsw:space": "cosine"},
+            )
+            shared_ocr_client = httpx.AsyncClient(timeout=300.0)
+
             semaphore = asyncio.Semaphore(num_workers)
 
             async def _process_one(doc_ref):
@@ -199,10 +217,14 @@ class DocumentService:
                                     await self._download_document(doc, session)
 
                                 if doc.download_status == "downloaded" and doc.ocr_status == "pending":
-                                    await self._ocr_document(doc, ocr_settings, session)
+                                    await self._ocr_document(doc, ocr_settings, session, ocr_client=shared_ocr_client)
 
                                 if doc.ocr_status == "completed" and doc.embed_status == "pending":
-                                    await self._embed_document(doc, embed_settings, ocr_settings, session)
+                                    await self._embed_document(
+                                        doc, embed_settings, ocr_settings, session,
+                                        embed_client=shared_embed_client,
+                                        chroma_collection=shared_chroma_collection,
+                                    )
 
                                 await session.commit()
                             break  # Success
@@ -230,16 +252,19 @@ class DocumentService:
 
                     await self._publish_stats()
 
-            # Process in batches to allow cancel checks and stats updates
-            batch_size = max(num_workers * 3, 10)
-            for i in range(0, len(docs), batch_size):
-                if self._cancel_requested:
-                    logger.info("Document processing cancelled by user")
-                    self.processing_stats["cancelled"] = True
-                    break
+            try:
+                # Process in batches to allow cancel checks and stats updates
+                batch_size = max(num_workers * 3, 10)
+                for i in range(0, len(docs), batch_size):
+                    if self._cancel_requested:
+                        logger.info("Document processing cancelled by user")
+                        self.processing_stats["cancelled"] = True
+                        break
 
-                batch = docs[i:i + batch_size]
-                await asyncio.gather(*[_process_one(d) for d in batch])
+                    batch = docs[i:i + batch_size]
+                    await asyncio.gather(*[_process_one(d) for d in batch])
+            finally:
+                await shared_ocr_client.aclose()
 
             self.processing_stats["completed"] = datetime.utcnow().isoformat()
             self.processing_stats["phase"] = "completed"
@@ -271,7 +296,7 @@ class DocumentService:
             doc.error_message = "Download failed after retries"
             self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
 
-    async def _ocr_document(self, doc: OpportunityDocument, ocr_settings: dict, session: AsyncSession):
+    async def _ocr_document(self, doc: OpportunityDocument, ocr_settings: dict, session: AsyncSession, ocr_client: httpx.AsyncClient | None = None):
         """OCR a downloaded document to extract text."""
         if not doc.local_path or not os.path.exists(doc.local_path):
             doc.ocr_status = "failed"
@@ -289,7 +314,7 @@ class DocumentService:
 
         try:
             if method == "dotsocr":
-                extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings)
+                extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
             elif method == "pymupdf":
                 extracted_text = await self._ocr_pymupdf(doc.local_path)
             else:
@@ -315,11 +340,14 @@ class DocumentService:
             doc.error_message = f"OCR error: {str(e)[:500]}"
             logger.error(f"OCR failed for document {doc.id}: {e}", exc_info=True)
 
-    async def _ocr_dotsocr(self, file_path: str, ocr_settings: dict) -> str | None:
+    async def _ocr_dotsocr(self, file_path: str, ocr_settings: dict, client: httpx.AsyncClient | None = None) -> str | None:
         """Send PDF to dotsocr endpoint, receive markdown."""
         endpoint = ocr_settings.get("endpoint_url", settings.OCR_ENDPOINT_URL)
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        should_close = client is None
+        if client is None:
+            client = httpx.AsyncClient(timeout=300.0)
+        try:
             with open(file_path, "rb") as f:
                 files = {"file": (os.path.basename(file_path), f, "application/pdf")}
                 response = await client.post(endpoint, files=files)
@@ -333,6 +361,9 @@ class DocumentService:
                 return data.get("text") or data.get("markdown") or data.get("content", "")
             else:
                 return response.text
+        finally:
+            if should_close:
+                await client.aclose()
 
     async def _ocr_pymupdf(self, file_path: str) -> str | None:
         """Extract text from PDF using PyMuPDF (local, no network)."""
@@ -349,7 +380,7 @@ class DocumentService:
 
         return await loop.run_in_executor(None, _extract)
 
-    async def _embed_document(self, doc: OpportunityDocument, embed_settings: dict, ocr_settings: dict, session: AsyncSession):
+    async def _embed_document(self, doc: OpportunityDocument, embed_settings: dict, ocr_settings: dict, session: AsyncSession, embed_client=None, chroma_collection=None):
         """Chunk extracted text, generate embeddings, store in ChromaDB."""
         text_path = doc.local_path + ".txt"
         if not os.path.exists(text_path):
@@ -386,9 +417,10 @@ class DocumentService:
                 {"doc_id": doc.id},
             )
 
-            # Generate embeddings in batches
-            from openai import AsyncOpenAI
-            embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+            # Generate embeddings in batches — use shared client if provided
+            if embed_client is None:
+                from openai import AsyncOpenAI
+                embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
 
             all_embeddings = []
             batch_size = 20
@@ -401,16 +433,18 @@ class DocumentService:
                 )
                 all_embeddings.extend([d.embedding for d in response.data])
 
-            # Store in ChromaDB
-            import chromadb
-            chroma_client = chromadb.HttpClient(
-                host=settings.CHROMADB_HOST,
-                port=settings.CHROMADB_PORT,
-            )
-            collection = chroma_client.get_or_create_collection(
-                name="opportunity_documents",
-                metadata={"hnsw:space": "cosine"},
-            )
+            # Store in ChromaDB — use shared collection if provided
+            if chroma_collection is None:
+                import chromadb
+                chroma_client = chromadb.HttpClient(
+                    host=settings.CHROMADB_HOST,
+                    port=settings.CHROMADB_PORT,
+                )
+                chroma_collection = chroma_client.get_or_create_collection(
+                    name="opportunity_documents",
+                    metadata={"hnsw:space": "cosine"},
+                )
+            collection = chroma_collection
 
             chroma_ids = []
             chroma_embeddings = []

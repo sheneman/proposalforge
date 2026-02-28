@@ -148,7 +148,7 @@ class DocumentService:
                                 OpportunityDocument.id.in_(batch)
                             )
                         )
-                    await session.commit()
+                        await session.commit()
                     logger.info(f"Deleted {len(closed_ids)} documents from closed/archived opportunities")
 
                 # Query pending docs for open opportunities only
@@ -229,9 +229,10 @@ class DocumentService:
                                 await session.commit()
                             break  # Success
                         except Exception as e:
-                            is_deadlock = "1213" in str(e) or "Deadlock" in str(e)
-                            if is_deadlock and attempt < max_retries - 1:
-                                logger.warning(f"Deadlock on document {doc_ref.id}, retry {attempt + 1}")
+                            err_str = str(e)
+                            is_retryable = "1213" in err_str or "Deadlock" in err_str or "1205" in err_str or "Lock wait timeout" in err_str or "PendingRollbackError" in err_str
+                            if is_retryable and attempt < max_retries - 1:
+                                logger.warning(f"DB contention on document {doc_ref.id}, retry {attempt + 1}: {err_str[:100]}")
                                 await asyncio.sleep(0.5 * (attempt + 1))
                                 continue
                             logger.error(f"Error processing document {doc_ref.id}: {e}", exc_info=True)

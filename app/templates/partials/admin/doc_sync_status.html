@@ -119,6 +119,13 @@
             hx-swap="innerHTML">
         <i class="bi bi-play-circle"></i> Process Pending Documents
     </button>
+    <button class="btn btn-outline-warning btn-sm"
+            hx-post="/admin/doc-sync/reset"
+            hx-target="#doc-sync-status"
+            hx-swap="innerHTML"
+            hx-confirm="Reset all documents to pending? This will re-download, re-extract, and re-embed everything.">
+        <i class="bi bi-arrow-counterclockwise"></i> Reset All
+    </button>
 </div>
 {% else %}
 <div class="text-muted small"><i class="bi bi-lock"></i> Log in to manage document processing</div>

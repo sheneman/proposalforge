@@ -911,6 +911,35 @@ async def cancel_doc_sync(request: Request, db: AsyncSession = Depends(get_db)):
     return HTMLResponse("<div class='alert alert-info py-2'>Cancellation requested...</div>")
 
 
+@router.post("/doc-sync/reset", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_db)):
+    """Reset all document statuses back to pending so they get reprocessed."""
+    from app.services.document_service import document_service
+    if document_service.is_processing:
+        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot reset while processing is in progress.</div>")
+
+    await db.execute(
+        text("""UPDATE opportunity_documents
+                SET download_status = 'pending',
+                    ocr_status = 'pending',
+                    embed_status = 'pending',
+                    error_message = NULL""")
+    )
+    await db.commit()
+
+    status = await document_service.get_processing_status()
+    counts = await document_service.get_document_counts()
+    tz = await settings_service.get_timezone(db)
+    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
+        "request": request,
+        "is_processing": False,
+        "stats": status["stats"],
+        "counts": counts,
+        "is_admin": _is_admin(request),
+        "tz": tz,
+    })
+
+
 @router.get("/doc-sync/errors", response_class=HTMLResponse)
 async def doc_sync_errors(request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.document_service import document_service

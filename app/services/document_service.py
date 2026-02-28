@@ -551,14 +551,10 @@ class DocumentService:
         # Check Redis for stats from another worker
         shared = await self._get_shared_stats()
         if shared:
-            # If shared stats exist and don't have a "completed" or "error" key,
-            # processing is still active on another worker
-            is_active = (
-                "completed" not in shared
-                and "error" not in shared
-                and not shared.get("cancelled", False)
-            )
-            return {"is_processing": is_active, "stats": shared}
+            return {
+                "is_processing": shared.get("is_processing", False),
+                "stats": shared,
+            }
 
         return {"is_processing": False, "stats": self.processing_stats}
 
@@ -641,9 +637,10 @@ class DocumentService:
         """Publish processing stats to Redis for cross-worker visibility."""
         try:
             import json
+            payload = {**self.processing_stats, "is_processing": self.is_processing}
             await cache_service.client.set(
                 REDIS_DOC_SYNC_KEY,
-                json.dumps(self.processing_stats),
+                json.dumps(payload),
                 ex=300,
             )
         except Exception:

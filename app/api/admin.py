@@ -874,7 +874,7 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
     if document_service.is_processing or status.get("is_processing"):
         return HTMLResponse("<div class='alert alert-warning py-2'>Processing already in progress.</div>")
 
-    # Write initial "processing" state to Redis so ALL workers see it immediately
+    # Set processing flag + initial stats in Redis so ALL workers see it immediately
     from app.services.cache_service import cache_service
     import json as _json
     counts = await document_service.get_document_counts()
@@ -885,7 +885,10 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
         "downloaded": 0, "ocr_completed": 0, "embedded": 0, "errors": 0,
     }
     try:
-        await cache_service.client.set("pf:doc_sync_stats", _json.dumps(initial_stats), ex=300)
+        pipe = cache_service.client.pipeline()
+        pipe.set("pf:doc_processing", "1", ex=300)
+        pipe.set("pf:doc_sync_stats", _json.dumps(initial_stats), ex=300)
+        await pipe.execute()
     except Exception:
         pass
 

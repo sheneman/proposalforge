@@ -19,6 +19,7 @@ from app.services.cache_service import cache_service
 logger = logging.getLogger(__name__)
 
 REDIS_DOC_SYNC_KEY = "pf:doc_sync_stats"
+REDIS_DOC_PROCESSING_FLAG = "pf:doc_processing"
 
 
 class DocumentService:
@@ -588,19 +589,20 @@ class DocumentService:
 
     async def get_processing_status(self) -> dict:
         """Get current processing status. Redis is the single source of truth."""
-        # Always check Redis first — it's shared across all workers
+        # Check the simple atomic flag first — most reliable
+        is_active = False
+        try:
+            flag = await cache_service.client.get(REDIS_DOC_PROCESSING_FLAG)
+            is_active = flag == b"1" or flag == "1"
+        except Exception:
+            # Redis unavailable — fall back to local state
+            is_active = self.is_processing
+
+        # Get detailed stats from Redis (or local fallback)
         shared = await self._get_shared_stats()
-        if shared:
-            return {
-                "is_processing": shared.get("is_processing", False),
-                "stats": shared,
-            }
+        stats = shared if shared else self.processing_stats
 
-        # No Redis data — fall back to local state (single worker / dev mode)
-        if self.is_processing:
-            return {"is_processing": True, "stats": self.processing_stats}
-
-        return {"is_processing": False, "stats": {}}
+        return {"is_processing": is_active, "stats": stats}
 
     async def get_document_counts(self) -> dict:
         """Get aggregate counts for the admin dashboard."""
@@ -682,11 +684,14 @@ class DocumentService:
         try:
             import json
             payload = {**self.processing_stats, "is_processing": self.is_processing}
-            await cache_service.client.set(
-                REDIS_DOC_SYNC_KEY,
-                json.dumps(payload),
-                ex=300,
-            )
+            pipe = cache_service.client.pipeline()
+            pipe.set(REDIS_DOC_SYNC_KEY, json.dumps(payload), ex=300)
+            # Separate atomic flag — simple string, no JSON
+            if self.is_processing:
+                pipe.set(REDIS_DOC_PROCESSING_FLAG, "1", ex=300)
+            else:
+                pipe.delete(REDIS_DOC_PROCESSING_FLAG)
+            await pipe.execute()
         except Exception:
             pass
 

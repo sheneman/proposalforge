@@ -132,14 +132,19 @@ class DocumentService:
                 )
                 archived_ids = [row[0] for row in archived_docs.all()]
                 if archived_ids:
-                    await session.execute(
-                        text("DELETE FROM document_chunks WHERE document_id IN :ids"),
-                        {"ids": archived_ids},
-                    )
-                    await session.execute(
-                        text("DELETE FROM opportunity_documents WHERE id IN :ids"),
-                        {"ids": archived_ids},
-                    )
+                    # Delete in batches to avoid overly long IN clauses
+                    for i in range(0, len(archived_ids), 500):
+                        batch = archived_ids[i:i + 500]
+                        await session.execute(
+                            DocumentChunk.__table__.delete().where(
+                                DocumentChunk.document_id.in_(batch)
+                            )
+                        )
+                        await session.execute(
+                            OpportunityDocument.__table__.delete().where(
+                                OpportunityDocument.id.in_(batch)
+                            )
+                        )
                     await session.commit()
                     logger.info(f"Deleted {len(archived_ids)} documents from archived opportunities")
 

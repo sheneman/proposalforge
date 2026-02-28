@@ -551,7 +551,14 @@ class DocumentService:
         # Check Redis for stats from another worker
         shared = await self._get_shared_stats()
         if shared:
-            return {"is_processing": False, "stats": shared}
+            # If shared stats exist and don't have a "completed" or "error" key,
+            # processing is still active on another worker
+            is_active = (
+                "completed" not in shared
+                and "error" not in shared
+                and not shared.get("cancelled", False)
+            )
+            return {"is_processing": is_active, "stats": shared}
 
         return {"is_processing": False, "stats": self.processing_stats}
 

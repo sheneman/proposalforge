@@ -866,9 +866,15 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
     if document_service.is_processing:
         return HTMLResponse("<div class='alert alert-warning py-2'>Processing already in progress.</div>")
 
+    # Clear stale Redis stats before starting so other workers see "processing" immediately
+    from app.services.cache_service import cache_service
+    try:
+        await cache_service.client.delete("pf:doc_sync_stats")
+    except Exception:
+        pass
+
     asyncio.create_task(document_service.process_pending_documents())
 
-    status = await document_service.get_processing_status()
     counts = await document_service.get_document_counts()
     tz = await settings_service.get_timezone(db)
     return templates.TemplateResponse("partials/admin/doc_sync_status.html", {

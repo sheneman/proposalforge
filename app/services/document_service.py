@@ -108,6 +108,19 @@ class DocumentService:
                 ocr_settings = await settings_service.get_ocr_settings(session)
                 embed_settings = await settings_service.get_embedding_settings(session)
 
+                # Reset all failed docs back to pending and clear errors
+                await session.execute(
+                    text("UPDATE opportunity_documents SET download_status = 'pending', error_message = NULL WHERE download_status = 'failed'")
+                )
+                await session.execute(
+                    text("UPDATE opportunity_documents SET ocr_status = 'pending', error_message = NULL WHERE ocr_status = 'failed'")
+                )
+                await session.execute(
+                    text("UPDATE opportunity_documents SET embed_status = 'pending', error_message = NULL WHERE embed_status = 'failed'")
+                )
+                await session.commit()
+                logger.info("Reset failed documents to pending")
+
                 # Query all docs with any pending status
                 stmt = select(OpportunityDocument).where(
                     or_(

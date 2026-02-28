@@ -323,8 +323,9 @@ class SyncService:
                     program_title=aln.get("programTitle"),
                 ))
 
-            # Extract attachment metadata (lightweight, no downloads) — skip archived
-            if status_val != "archived":
+            # Extract attachment metadata (lightweight, no downloads) — skip closed/archived
+            is_open = status_val != "archived" and (opp.close_date is None or opp.close_date >= date.today())
+            if is_open:
                 try:
                     from app.services.document_service import document_service
                     await document_service.extract_attachment_metadata(session, opp, detail)

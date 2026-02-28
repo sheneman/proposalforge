@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import httpx
 from sqlalchemy import select, or_, func, text
@@ -124,17 +124,20 @@ class DocumentService:
                 await session.commit()
                 logger.info("Reset failed documents to pending")
 
-                # Delete documents belonging to archived opportunities
-                archived_docs = await session.execute(
+                # Delete documents for closed/archived opportunities
+                today = date.today()
+                closed_docs = await session.execute(
                     select(OpportunityDocument.id)
                     .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
-                    .where(Opportunity.status == "archived")
+                    .where(or_(
+                        Opportunity.status == "archived",
+                        Opportunity.close_date < today,
+                    ))
                 )
-                archived_ids = [row[0] for row in archived_docs.all()]
-                if archived_ids:
-                    # Delete in batches to avoid overly long IN clauses
-                    for i in range(0, len(archived_ids), 500):
-                        batch = archived_ids[i:i + 500]
+                closed_ids = [row[0] for row in closed_docs.all()]
+                if closed_ids:
+                    for i in range(0, len(closed_ids), 500):
+                        batch = closed_ids[i:i + 500]
                         await session.execute(
                             DocumentChunk.__table__.delete().where(
                                 DocumentChunk.document_id.in_(batch)
@@ -146,14 +149,15 @@ class DocumentService:
                             )
                         )
                     await session.commit()
-                    logger.info(f"Deleted {len(archived_ids)} documents from archived opportunities")
+                    logger.info(f"Deleted {len(closed_ids)} documents from closed/archived opportunities")
 
-                # Query pending docs, excluding archived opportunities
+                # Query pending docs for open opportunities only
                 stmt = (
                     select(OpportunityDocument)
                     .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
                     .where(
                         Opportunity.status != "archived",
+                        or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
                         or_(
                             OpportunityDocument.download_status == "pending",
                             OpportunityDocument.ocr_status == "pending",
@@ -646,12 +650,16 @@ class DocumentService:
         return {"is_processing": is_active, "stats": stats}
 
     async def get_document_counts(self) -> dict:
-        """Get aggregate counts for the admin dashboard (excludes archived opportunities)."""
+        """Get aggregate counts for the admin dashboard (open opportunities only)."""
         async with async_session() as session:
+            today = date.today()
             base = (
                 select(func.count(OpportunityDocument.id))
                 .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
-                .where(Opportunity.status != "archived")
+                .where(
+                    Opportunity.status != "archived",
+                    or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                )
             )
             total = await session.execute(base)
             downloaded = await session.execute(

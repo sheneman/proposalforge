@@ -38,9 +38,12 @@ TIMEZONE_CHOICES = [
     "US/Hawaii",
 ]
 
-# Keys for OCR configuration
+# Keys for OCR / Document Processing configuration
 OCR_METHOD_KEY = "ocr_method"
 OCR_ENDPOINT_URL_KEY = "ocr_endpoint_url"
+DOC_WORKERS_KEY = "doc_workers"
+CHUNK_SIZE_TOKENS_KEY = "chunk_size_tokens"
+CHUNK_OVERLAP_TOKENS_KEY = "chunk_overlap_tokens"
 
 # Per-source scheduler keys
 GRANTS_SCHEDULER_ENABLED_KEY = "grants_scheduler_enabled"
@@ -165,13 +168,19 @@ class SettingsService:
 
     # --- OCR Settings ---
 
-    async def get_ocr_settings(self, session: AsyncSession) -> dict[str, str]:
-        """Get OCR endpoint settings, falling back to config.py defaults."""
+    async def get_ocr_settings(self, session: AsyncSession) -> dict[str, Any]:
+        """Get OCR / document processing settings, falling back to config.py defaults."""
         method = await self.get(session, OCR_METHOD_KEY)
         endpoint_url = await self.get(session, OCR_ENDPOINT_URL_KEY)
+        workers = await self.get(session, DOC_WORKERS_KEY)
+        chunk_size = await self.get(session, CHUNK_SIZE_TOKENS_KEY)
+        chunk_overlap = await self.get(session, CHUNK_OVERLAP_TOKENS_KEY)
         return {
             "method": method or app_settings.OCR_METHOD,
             "endpoint_url": endpoint_url or app_settings.OCR_ENDPOINT_URL,
+            "doc_workers": int(workers) if workers else 4,
+            "chunk_size_tokens": int(chunk_size) if chunk_size else 1000,
+            "chunk_overlap_tokens": int(chunk_overlap) if chunk_overlap else 200,
         }
 
     async def save_ocr_settings(
@@ -179,10 +188,19 @@ class SettingsService:
         session: AsyncSession,
         method: str = "",
         endpoint_url: str = "",
+        doc_workers: int | None = None,
+        chunk_size_tokens: int | None = None,
+        chunk_overlap_tokens: int | None = None,
     ) -> None:
-        """Save OCR settings to the database."""
+        """Save OCR / document processing settings to the database."""
         await self.set(session, OCR_METHOD_KEY, method)
         await self.set(session, OCR_ENDPOINT_URL_KEY, endpoint_url)
+        if doc_workers is not None:
+            await self.set(session, DOC_WORKERS_KEY, str(max(1, min(doc_workers, 16))))
+        if chunk_size_tokens is not None:
+            await self.set(session, CHUNK_SIZE_TOKENS_KEY, str(max(100, chunk_size_tokens)))
+        if chunk_overlap_tokens is not None:
+            await self.set(session, CHUNK_OVERLAP_TOKENS_KEY, str(max(0, chunk_overlap_tokens)))
 
     # --- Per-source Scheduler Settings ---
 

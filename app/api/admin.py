@@ -797,8 +797,15 @@ async def save_ocr_settings(request: Request, db: AsyncSession = Depends(get_db)
     form = await request.form()
     method = (form.get("method") or "dotsocr").strip()
     endpoint_url = (form.get("endpoint_url") or "").strip()
+    doc_workers = int(form.get("doc_workers") or 4)
+    chunk_size_tokens = int(form.get("chunk_size_tokens") or 1000)
+    chunk_overlap_tokens = int(form.get("chunk_overlap_tokens") or 200)
 
-    await settings_service.save_ocr_settings(db, method=method, endpoint_url=endpoint_url)
+    await settings_service.save_ocr_settings(
+        db, method=method, endpoint_url=endpoint_url,
+        doc_workers=doc_workers, chunk_size_tokens=chunk_size_tokens,
+        chunk_overlap_tokens=chunk_overlap_tokens,
+    )
 
     ocr = await settings_service.get_ocr_settings(db)
     return templates.TemplateResponse("partials/admin/ocr_settings.html", {

@@ -132,56 +132,48 @@ class DocumentService:
                 result = await session.execute(stmt)
                 docs = list(result.scalars().all())
 
+            num_workers = ocr_settings.get("doc_workers", 4)
             self.processing_stats["total"] = len(docs)
             self.processing_stats["phase"] = "processing"
             await self._publish_stats()
 
-            logger.info(f"Processing {len(docs)} pending documents")
+            logger.info(f"Processing {len(docs)} pending documents with {num_workers} workers")
 
-            batch_size = 10
-            for i in range(0, len(docs), batch_size):
+            semaphore = asyncio.Semaphore(num_workers)
+
+            async def _process_one(doc_ref):
                 if self._cancel_requested:
-                    logger.info("Document processing cancelled by user")
-                    self.processing_stats["cancelled"] = True
-                    break
-
-                batch = docs[i:i + batch_size]
-
-                for doc in batch:
+                    return
+                async with semaphore:
                     if self._cancel_requested:
-                        break
-
+                        return
                     try:
                         async with async_session() as session:
-                            # Re-fetch to get current state
                             stmt = select(OpportunityDocument).where(
-                                OpportunityDocument.id == doc.id
+                                OpportunityDocument.id == doc_ref.id
                             )
                             result = await session.execute(stmt)
                             doc = result.scalar_one_or_none()
                             if not doc:
-                                continue
+                                return
 
-                            # Step 1: Download
                             if doc.download_status == "pending":
                                 await self._download_document(doc, session)
 
-                            # Step 2: OCR
                             if doc.download_status == "downloaded" and doc.ocr_status == "pending":
                                 await self._ocr_document(doc, ocr_settings, session)
 
-                            # Step 3: Chunk and embed
                             if doc.ocr_status == "completed" and doc.embed_status == "pending":
-                                await self._embed_document(doc, embed_settings, session)
+                                await self._embed_document(doc, embed_settings, ocr_settings, session)
 
                             await session.commit()
                     except Exception as e:
-                        logger.error(f"Error processing document {doc.id}: {e}", exc_info=True)
+                        logger.error(f"Error processing document {doc_ref.id}: {e}", exc_info=True)
                         self.processing_stats["errors"] += 1
                         try:
                             async with async_session() as err_session:
                                 stmt = select(OpportunityDocument).where(
-                                    OpportunityDocument.id == doc.id
+                                    OpportunityDocument.id == doc_ref.id
                                 )
                                 result = await err_session.execute(stmt)
                                 err_doc = result.scalar_one_or_none()
@@ -192,6 +184,17 @@ class DocumentService:
                             pass
 
                     await self._publish_stats()
+
+            # Process in batches to allow cancel checks and stats updates
+            batch_size = max(num_workers * 3, 10)
+            for i in range(0, len(docs), batch_size):
+                if self._cancel_requested:
+                    logger.info("Document processing cancelled by user")
+                    self.processing_stats["cancelled"] = True
+                    break
+
+                batch = docs[i:i + batch_size]
+                await asyncio.gather(*[_process_one(d) for d in batch])
 
             self.processing_stats["completed"] = datetime.utcnow().isoformat()
             self.processing_stats["phase"] = "completed"
@@ -301,7 +304,7 @@ class DocumentService:
 
         return await loop.run_in_executor(None, _extract)
 
-    async def _embed_document(self, doc: OpportunityDocument, embed_settings: dict, session: AsyncSession):
+    async def _embed_document(self, doc: OpportunityDocument, embed_settings: dict, ocr_settings: dict, session: AsyncSession):
         """Chunk extracted text, generate embeddings, store in ChromaDB."""
         text_path = doc.local_path + ".txt"
         if not os.path.exists(text_path):
@@ -327,8 +330,10 @@ class DocumentService:
             return
 
         try:
-            # Chunk the text
-            chunks = self._chunk_text(full_text)
+            # Chunk the text using token-based sizing
+            chunk_size = ocr_settings.get("chunk_size_tokens", 1000)
+            chunk_overlap = ocr_settings.get("chunk_overlap_tokens", 200)
+            chunks = self._chunk_text(full_text, chunk_size=chunk_size, overlap=chunk_overlap)
 
             # Delete existing chunks for this document
             await session.execute(
@@ -417,66 +422,91 @@ class DocumentService:
     def _chunk_text(
         self, text_content: str, chunk_size: int = 1000, overlap: int = 200
     ) -> list[dict]:
-        """Split text at paragraph/sentence boundaries.
+        """Split text at paragraph/sentence boundaries using token counts.
+
+        Args:
+            text_content: Full text to chunk.
+            chunk_size: Target chunk size in tokens.
+            overlap: Overlap between chunks in tokens.
 
         Returns list of {text, offset, length}.
         """
         if not text_content:
             return []
 
+        import tiktoken
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            enc = tiktoken.get_encoding("gpt2")
+
+        def _token_len(s: str) -> int:
+            return len(enc.encode(s, disallowed_special=()))
+
         # Split into paragraphs
         paragraphs = re.split(r'\n\s*\n', text_content)
 
         chunks = []
-        current_chunk = ""
+        current_paras: list[str] = []
+        current_tokens = 0
         current_offset = 0
         pos = 0
 
         for para in paragraphs:
             para = para.strip()
             if not para:
-                pos += 2  # account for newlines
+                pos += 2
                 continue
 
-            # Find actual position of this paragraph in original text
             para_start = text_content.find(para, pos)
             if para_start == -1:
                 para_start = pos
             pos = para_start + len(para)
 
-            if len(current_chunk) + len(para) + 1 > chunk_size and current_chunk:
+            para_tokens = _token_len(para)
+
+            if current_tokens + para_tokens > chunk_size and current_paras:
+                chunk_text = "\n\n".join(current_paras).strip()
                 chunks.append({
-                    "text": current_chunk.strip(),
+                    "text": chunk_text,
                     "offset": current_offset,
-                    "length": len(current_chunk.strip()),
+                    "length": len(chunk_text),
                 })
 
-                # Overlap: take last overlap characters
-                if overlap > 0 and len(current_chunk) > overlap:
-                    # Find a sentence boundary near the overlap point
-                    overlap_text = current_chunk[-overlap:]
-                    sentence_break = overlap_text.find('. ')
-                    if sentence_break > 0:
-                        overlap_text = overlap_text[sentence_break + 2:]
-                    current_chunk = overlap_text + "\n\n" + para
-                    current_offset = para_start - len(overlap_text)
+                # Build overlap from trailing paragraphs
+                if overlap > 0:
+                    overlap_paras: list[str] = []
+                    overlap_tokens = 0
+                    for p in reversed(current_paras):
+                        p_tok = _token_len(p)
+                        if overlap_tokens + p_tok > overlap and overlap_paras:
+                            break
+                        overlap_paras.insert(0, p)
+                        overlap_tokens += p_tok
+                    current_paras = overlap_paras + [para]
+                    current_tokens = overlap_tokens + para_tokens
+                    # Approximate offset from overlap start
+                    overlap_text = "\n\n".join(overlap_paras)
+                    current_offset = para_start - len(overlap_text) - 2 if overlap_text else para_start
                 else:
-                    current_chunk = para
+                    current_paras = [para]
+                    current_tokens = para_tokens
                     current_offset = para_start
             else:
-                if not current_chunk:
+                if not current_paras:
                     current_offset = para_start
-                    current_chunk = para
-                else:
-                    current_chunk += "\n\n" + para
+                current_paras.append(para)
+                current_tokens += para_tokens
 
         # Final chunk
-        if current_chunk.strip():
-            chunks.append({
-                "text": current_chunk.strip(),
-                "offset": current_offset,
-                "length": len(current_chunk.strip()),
-            })
+        if current_paras:
+            chunk_text = "\n\n".join(current_paras).strip()
+            if chunk_text:
+                chunks.append({
+                    "text": chunk_text,
+                    "offset": current_offset,
+                    "length": len(chunk_text),
+                })
 
         return chunks
 

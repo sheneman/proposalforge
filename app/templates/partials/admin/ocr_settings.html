@@ -1,6 +1,6 @@
 {% if saved %}
 <div class="alert alert-success alert-dismissible fade show py-2 mb-3" role="alert">
-    <i class="bi bi-check-circle"></i> OCR settings saved successfully.
+    <i class="bi bi-check-circle"></i> Document processing settings saved successfully.
     <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
 </div>
 {% endif %}
@@ -15,13 +15,36 @@
             </select>
             <div class="form-text">Method for extracting text from PDFs.</div>
         </div>
-        <div class="col-md-8 mb-3">
+        <div class="col-md-5 mb-3">
             <label class="form-label fw-bold" for="ocr-endpoint-url">OCR Endpoint URL</label>
             <input type="url" class="form-control" id="ocr-endpoint-url" name="endpoint_url"
                    value="{{ ocr.endpoint_url or '' }}"
                    placeholder="https://dotsocr.nkn.uidaho.edu/dotsocr"
                    {{ 'readonly' if not is_admin }}>
             <div class="form-text">URL for the dotsocr API (ignored when using PyMuPDF).</div>
+        </div>
+        <div class="col-md-3 mb-3">
+            <label class="form-label fw-bold" for="doc-workers">Concurrent Workers</label>
+            <input type="number" class="form-control" id="doc-workers" name="doc_workers"
+                   value="{{ ocr.doc_workers }}" min="1" max="16"
+                   {{ 'readonly' if not is_admin }}>
+            <div class="form-text">Parallel download/OCR/embed tasks.</div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-md-4 mb-3">
+            <label class="form-label fw-bold" for="chunk-size-tokens">Chunk Size (tokens)</label>
+            <input type="number" class="form-control" id="chunk-size-tokens" name="chunk_size_tokens"
+                   value="{{ ocr.chunk_size_tokens }}" min="100" max="8000"
+                   {{ 'readonly' if not is_admin }}>
+            <div class="form-text">Target size for each text chunk.</div>
+        </div>
+        <div class="col-md-4 mb-3">
+            <label class="form-label fw-bold" for="chunk-overlap-tokens">Chunk Overlap (tokens)</label>
+            <input type="number" class="form-control" id="chunk-overlap-tokens" name="chunk_overlap_tokens"
+                   value="{{ ocr.chunk_overlap_tokens }}" min="0" max="2000"
+                   {{ 'readonly' if not is_admin }}>
+            <div class="form-text">Overlap between consecutive chunks.</div>
         </div>
     </div>
     {% if is_admin %}
@@ -31,11 +54,11 @@
         </button>
         <button type="button" class="btn btn-outline-secondary btn-sm"
                 onclick="testOcrConnection()">
-            <i class="bi bi-plug"></i> Test Connection
+            <i class="bi bi-plug"></i> Test OCR Connection
         </button>
         <span id="ocr-test-result" class="small"></span>
     </div>
     {% else %}
-    <div class="text-muted small"><i class="bi bi-lock"></i> Log in to modify OCR settings</div>
+    <div class="text-muted small"><i class="bi bi-lock"></i> Log in to modify settings</div>
     {% endif %}
 </form>

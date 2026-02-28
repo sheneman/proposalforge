@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 REDIS_DOC_SYNC_KEY = "pf:doc_sync_stats"
 REDIS_DOC_PROCESSING_FLAG = "pf:doc_processing"
+REDIS_DOC_COMPLETED_KEY = "pf:doc_completed"
 
 
 class DocumentService:
@@ -603,7 +604,14 @@ class DocumentService:
         shared = await self._get_shared_stats()
         stats = shared if shared else self.processing_stats
 
-        logger.info(f"doc status: flag={flag!r} is_active={is_active} local={self.is_processing} shared_keys={list(shared.keys()) if shared else 'none'}")
+        # If idle, ensure we have the completion timestamp from persistent key
+        if not is_active and not stats.get("completed"):
+            try:
+                completed = await cache_service._redis.get(REDIS_DOC_COMPLETED_KEY)
+                if completed:
+                    stats = {**stats, "completed": completed}
+            except Exception:
+                pass
 
         return {"is_processing": is_active, "stats": stats}
 
@@ -694,6 +702,9 @@ class DocumentService:
                 pipe.set(REDIS_DOC_PROCESSING_FLAG, "1", ex=300)
             else:
                 pipe.delete(REDIS_DOC_PROCESSING_FLAG)
+                # Store completion time persistently (24h TTL)
+                if payload.get("completed"):
+                    pipe.set(REDIS_DOC_COMPLETED_KEY, payload["completed"], ex=86400)
             await pipe.execute()
         except Exception:
             pass

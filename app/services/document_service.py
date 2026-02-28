@@ -183,41 +183,50 @@ class DocumentService:
                 async with semaphore:
                     if self._cancel_requested:
                         return
-                    try:
-                        async with async_session() as session:
-                            stmt = select(OpportunityDocument).where(
-                                OpportunityDocument.id == doc_ref.id
-                            )
-                            result = await session.execute(stmt)
-                            doc = result.scalar_one_or_none()
-                            if not doc:
-                                return
-
-                            if doc.download_status == "pending":
-                                await self._download_document(doc, session)
-
-                            if doc.download_status == "downloaded" and doc.ocr_status == "pending":
-                                await self._ocr_document(doc, ocr_settings, session)
-
-                            if doc.ocr_status == "completed" and doc.embed_status == "pending":
-                                await self._embed_document(doc, embed_settings, ocr_settings, session)
-
-                            await session.commit()
-                    except Exception as e:
-                        logger.error(f"Error processing document {doc_ref.id}: {e}", exc_info=True)
-                        self.processing_stats["errors"] += 1
+                    max_retries = 3
+                    for attempt in range(max_retries):
                         try:
-                            async with async_session() as err_session:
+                            async with async_session() as session:
                                 stmt = select(OpportunityDocument).where(
                                     OpportunityDocument.id == doc_ref.id
                                 )
-                                result = await err_session.execute(stmt)
-                                err_doc = result.scalar_one_or_none()
-                                if err_doc:
-                                    err_doc.error_message = str(e)[:2000]
-                                    await err_session.commit()
-                        except Exception:
-                            pass
+                                result = await session.execute(stmt)
+                                doc = result.scalar_one_or_none()
+                                if not doc:
+                                    return
+
+                                if doc.download_status == "pending":
+                                    await self._download_document(doc, session)
+
+                                if doc.download_status == "downloaded" and doc.ocr_status == "pending":
+                                    await self._ocr_document(doc, ocr_settings, session)
+
+                                if doc.ocr_status == "completed" and doc.embed_status == "pending":
+                                    await self._embed_document(doc, embed_settings, ocr_settings, session)
+
+                                await session.commit()
+                            break  # Success
+                        except Exception as e:
+                            is_deadlock = "1213" in str(e) or "Deadlock" in str(e)
+                            if is_deadlock and attempt < max_retries - 1:
+                                logger.warning(f"Deadlock on document {doc_ref.id}, retry {attempt + 1}")
+                                await asyncio.sleep(0.5 * (attempt + 1))
+                                continue
+                            logger.error(f"Error processing document {doc_ref.id}: {e}", exc_info=True)
+                            self.processing_stats["errors"] += 1
+                            try:
+                                async with async_session() as err_session:
+                                    stmt = select(OpportunityDocument).where(
+                                        OpportunityDocument.id == doc_ref.id
+                                    )
+                                    result = await err_session.execute(stmt)
+                                    err_doc = result.scalar_one_or_none()
+                                    if err_doc:
+                                        err_doc.error_message = str(e)[:2000]
+                                        await err_session.commit()
+                            except Exception:
+                                pass
+                            break
 
                     await self._publish_stats()
 

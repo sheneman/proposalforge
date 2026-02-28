@@ -591,16 +591,19 @@ class DocumentService:
         """Get current processing status. Redis is the single source of truth."""
         # Check the simple atomic flag first — most reliable
         is_active = False
+        flag = None
         try:
             flag = await cache_service.client.get(REDIS_DOC_PROCESSING_FLAG)
             is_active = flag == b"1" or flag == "1"
-        except Exception:
-            # Redis unavailable — fall back to local state
+        except Exception as e:
+            logger.warning(f"Redis flag check failed: {e}, falling back to local state")
             is_active = self.is_processing
 
         # Get detailed stats from Redis (or local fallback)
         shared = await self._get_shared_stats()
         stats = shared if shared else self.processing_stats
+
+        logger.info(f"doc status: flag={flag!r} is_active={is_active} local={self.is_processing} shared_keys={list(shared.keys()) if shared else 'none'}")
 
         return {"is_processing": is_active, "stats": stats}
 

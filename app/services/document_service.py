@@ -40,7 +40,7 @@ class DocumentService:
 
         for folder in folders:
             folder_name = folder.get("folderName", "")
-            attachments = folder.get("attachments") or []
+            attachments = folder.get("synopsisAttachments") or []
 
             for att in attachments:
                 att_id = str(att.get("id", ""))
@@ -58,8 +58,8 @@ class DocumentService:
                     # Update metadata if changed
                     existing.file_name = att.get("fileName", existing.file_name)
                     existing.mime_type = att.get("mimeType", existing.mime_type)
-                    existing.file_size = att.get("fileSizeInBytes", existing.file_size)
-                    existing.file_description = att.get("description", existing.file_description)
+                    existing.file_size = att.get("fileLobSize", existing.file_size)
+                    existing.file_description = att.get("fileDescription", existing.file_description)
                     existing.folder_name = folder_name
                     continue
 
@@ -68,8 +68,8 @@ class DocumentService:
                     attachment_id=att_id,
                     file_name=att.get("fileName", "unknown"),
                     mime_type=att.get("mimeType"),
-                    file_size=att.get("fileSizeInBytes"),
-                    file_description=att.get("description"),
+                    file_size=att.get("fileLobSize"),
+                    file_description=att.get("fileDescription"),
                     folder_name=folder_name,
                     download_status="pending",
                     ocr_status="pending",

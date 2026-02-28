@@ -459,6 +459,14 @@ async function loadRunDetail(runId) {
             </div>`;
         }
 
+        if (run.status === 'completed' && run.output_summary && run.output_summary.matches_produced > 0) {
+            html += `<div class="mb-3">
+                <a href="/agents/api/workflows/runs/${runId}/matches/csv" class="btn btn-sm btn-outline-success">
+                    <i class="bi bi-download"></i> Export All Matches (CSV)
+                </a>
+            </div>`;
+        }
+
         if (run.error_message) {
             html += `<div class="alert alert-danger py-1 small">${run.error_message}</div>`;
         }

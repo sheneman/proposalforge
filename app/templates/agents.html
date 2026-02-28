@@ -302,6 +302,7 @@
                                             <th>Completed</th>
                                             <th>Matches</th>
                                             <th>Error</th>
+                                            <th></th>
                                         </tr>
                                     </thead>
                                     <tbody id="runs-table-body">
@@ -326,10 +327,15 @@
                                             <td class="small">{{ run.completed_at or '-' }}</td>
                                             <td>{{ run.output_summary.matches_produced if run.output_summary else '-' }}</td>
                                             <td class="small text-danger">{{ (run.error_message or '')[:50] }}</td>
+                                            <td>
+                                                {% if run.status == 'completed' and run.output_summary and run.output_summary.matches_produced %}
+                                                <a href="/agents/api/workflows/runs/{{ run.id }}/matches/csv" onclick="event.stopPropagation()" title="Download CSV" class="text-success"><i class="bi bi-download"></i></a>
+                                                {% endif %}
+                                            </td>
                                         </tr>
                                         {% endfor %}
                                         {% if not runs %}
-                                        <tr><td colspan="7" class="text-center text-muted py-3">No workflow runs yet</td></tr>
+                                        <tr><td colspan="8" class="text-center text-muted py-3">No workflow runs yet</td></tr>
                                         {% endif %}
                                     </tbody>
                                 </table>

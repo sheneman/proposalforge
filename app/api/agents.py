@@ -1,4 +1,6 @@
 import asyncio
+import csv
+import io
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -167,6 +169,58 @@ async def get_run_detail(run_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/api/workflows/runs/{run_id}/matches/csv")
+async def export_run_matches_csv(run_id: int, db: AsyncSession = Depends(get_db)):
+    """Export all matches for a run as CSV."""
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import select
+    from app.models.agent import AgentMatch
+
+    run = await workflow_service.get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    stmt = (
+        select(AgentMatch)
+        .where(AgentMatch.run_id == run_id)
+        .options(selectinload(AgentMatch.researcher), selectinload(AgentMatch.opportunity))
+        .order_by(AgentMatch.overall_score.desc())
+    )
+    result = await db.execute(stmt)
+    matches = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "researcher_id", "researcher_name",
+        "opportunity_id", "opportunity_title", "agency_code",
+        "overall_score", "relevance_score", "feasibility_score", "impact_score",
+        "confidence", "justification", "critique", "summary",
+    ])
+    for m in matches:
+        writer.writerow([
+            m.researcher_id,
+            m.researcher.full_name if m.researcher else "",
+            m.opportunity_id,
+            m.opportunity.title if m.opportunity else "",
+            m.opportunity.agency_code if m.opportunity else "",
+            round(m.overall_score, 2),
+            round(m.relevance_score, 2),
+            round(m.feasibility_score, 2),
+            round(m.impact_score, 2),
+            m.confidence,
+            m.justification or "",
+            m.critique or "",
+            m.summary or "",
+        ])
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=matches_run_{run_id}.csv"},
+    )
+
+
 @router.get("/api/workflows/runs/{run_id}/progress")
 async def get_run_progress(run_id: int):
     """Live progress endpoint for HTMX polling."""
@@ -308,8 +362,12 @@ async def partial_run_table(request: Request, db: AsyncSession = Depends(get_db)
             "cancelled": '<span class="badge bg-warning">Cancelled</span>',
         }.get(rd["status"], f'<span class="badge bg-secondary">{rd["status"]}</span>')
 
-        summary = rd.get("output_summary", {})
+        summary = rd.get("output_summary") or {}
         matches_count = summary.get("matches_produced", "-")
+
+        csv_link = ""
+        if rd["status"] == "completed" and summary.get("matches_produced"):
+            csv_link = f'<a href="/agents/api/workflows/runs/{rd["id"]}/matches/csv" onclick="event.stopPropagation()" title="Download CSV" class="text-success"><i class="bi bi-download"></i></a>'
 
         rows_html += f"""<tr class="run-row" data-run-id="{rd['id']}" style="cursor:pointer"
             onclick="loadRunDetail({rd['id']})">
@@ -320,6 +378,7 @@ async def partial_run_table(request: Request, db: AsyncSession = Depends(get_db)
             <td>{rd.get('completed_at', '-') or '-'}</td>
             <td>{matches_count}</td>
             <td>{rd.get('error_message', '') or ''}</td>
+            <td>{csv_link}</td>
         </tr>"""
 
     return HTMLResponse(rows_html)

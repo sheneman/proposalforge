@@ -22,6 +22,9 @@
                         <td>
                             <div class="fw-semibold" style="max-width:220px;" title="{{ doc.file_name }}">
                                 {{ doc.file_name | truncate(40) }}
+                                {% if doc.source == 'linked' %}
+                                <i class="bi bi-link-45deg text-info" title="Linked from description"></i>
+                                {% endif %}
                             </div>
                             {% if doc.file_description %}
                             <small class="text-muted">{{ doc.file_description | truncate(60) }}</small>

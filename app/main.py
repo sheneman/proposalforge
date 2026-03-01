@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS last_completed_node VARCHAR(100) DEFAULT NULL",
             "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS checkpoint_state MEDIUMTEXT DEFAULT NULL",
             "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0",
+            "ALTER TABLE opportunity_documents ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'grants_gov'",
         ]:
             try:
                 await conn.execute(sa_text(ddl))

@@ -86,6 +86,233 @@ class DocumentService:
 
         return created
 
+    # Domains to skip when extracting linked documents
+    _SKIP_DOMAINS = {
+        "sam.gov", "www.sam.gov",
+        "grants.gov", "www.grants.gov", "apply07.grants.gov",
+        "teams.microsoft.com", "dod.teams.microsoft.us",
+        "youtube.com", "www.youtube.com",
+        "twitter.com", "x.com",
+        "facebook.com", "www.facebook.com",
+        "linkedin.com", "www.linkedin.com",
+        "whitehouse.gov", "www.whitehouse.gov",
+        "urldefense.proofpoint.com",
+        "usaspending.gov", "www.usaspending.gov",
+        "sba.gov", "www.sba.gov",
+    }
+
+    # Content types we can process
+    _FETCHABLE_CONTENT_TYPES = {
+        "application/pdf", "text/html",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # docx
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # xlsx
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # pptx
+        "application/msword",  # doc
+        "text/plain", "text/csv",
+    }
+
+    _URL_PATTERN = re.compile(r'https?://[^\s<>"\')\]&;]+(?:&amp;[^\s<>"\')\]&;]+)*')
+
+    def _extract_urls(self, text_content: str) -> list[str]:
+        """Extract and deduplicate URLs from text, filtering noise domains."""
+        import html
+        from urllib.parse import urlparse
+
+        raw_urls = self._URL_PATTERN.findall(text_content)
+        seen = set()
+        result = []
+
+        for url in raw_urls:
+            # Decode HTML entities
+            url = html.unescape(url)
+            # Strip trailing punctuation that's not part of URL
+            url = url.rstrip(".,;:!?)")
+
+            try:
+                parsed = urlparse(url)
+                domain = parsed.netloc.lower().rstrip(".")
+            except Exception:
+                continue
+
+            if not domain:
+                continue
+            if domain in self._SKIP_DOMAINS:
+                continue
+            if url in seen:
+                continue
+
+            seen.add(url)
+            result.append(url)
+
+        return result
+
+    async def extract_linked_documents(
+        self, session: AsyncSession, opp, client: httpx.AsyncClient | None = None
+    ) -> int:
+        """Extract URLs from opportunity description, fetch content, create document rows.
+
+        Returns the number of new linked documents created.
+        """
+        import hashlib
+        from urllib.parse import urlparse
+
+        description = opp.synopsis_description or ""
+        urls = self._extract_urls(description)
+        if not urls:
+            return 0
+
+        created = 0
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=30.0,
+                headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
+            )
+            close_client = True
+
+        try:
+            for url in urls:
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+                att_id = f"linked_{url_hash}"
+
+                # Skip if already exists
+                stmt = select(OpportunityDocument).where(
+                    OpportunityDocument.attachment_id == att_id
+                )
+                result = await session.execute(stmt)
+                if result.scalar_one_or_none():
+                    continue
+
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                except Exception as e:
+                    logger.debug(f"Failed to fetch {url}: {e}")
+                    continue
+
+                content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                content_length = len(resp.content)
+
+                # Skip if too large (>10MB) or empty
+                if content_length > 10 * 1024 * 1024 or content_length == 0:
+                    continue
+
+                # Skip unsupported content types
+                if not any(content_type.startswith(ct) for ct in self._FETCHABLE_CONTENT_TYPES):
+                    continue
+
+                # Determine file extension from content type
+                ext_map = {
+                    "application/pdf": ".pdf",
+                    "text/html": ".html",
+                    "text/plain": ".txt",
+                    "text/csv": ".csv",
+                    "application/msword": ".doc",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+                }
+                ext = ext_map.get(content_type, "")
+
+                # Try to get filename from URL path
+                try:
+                    path = urlparse(str(resp.url)).path
+                    url_filename = path.split("/")[-1] if path else ""
+                    if not url_filename or len(url_filename) > 200:
+                        url_filename = ""
+                except Exception:
+                    url_filename = ""
+
+                if url_filename and "." in url_filename:
+                    file_name = url_filename
+                else:
+                    file_name = f"linked_{url_hash}{ext}"
+
+                safe_name = re.sub(r'[^\w\-.]', '_', file_name)
+                dest_path = os.path.join(
+                    settings.DOCUMENT_STORAGE_PATH,
+                    str(opp.id),
+                    f"{att_id}_{safe_name}",
+                )
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+                with open(dest_path, "wb") as f:
+                    f.write(resp.content)
+
+                doc = OpportunityDocument(
+                    opportunity_id=opp.id,
+                    attachment_id=att_id,
+                    file_name=file_name,
+                    mime_type=content_type,
+                    file_size=content_length,
+                    file_description=f"Linked from description: {url[:500]}",
+                    folder_name="Linked from description",
+                    source="linked",
+                    local_path=dest_path,
+                    download_status="downloaded",
+                    ocr_status="pending",
+                    classify_status="pending",
+                    embed_status="pending",
+                )
+                session.add(doc)
+                created += 1
+
+        finally:
+            if close_client:
+                await client.aclose()
+
+        if created > 0:
+            await session.flush()
+
+        return created
+
+    async def batch_extract_linked_documents(self):
+        """Batch extract linked documents for all open opportunities without Grants.gov docs."""
+        from app.models.opportunity import Opportunity
+
+        async with async_session() as session:
+            today = date.today()
+            # Find open opportunities with no documents at all
+            stmt = (
+                select(Opportunity)
+                .outerjoin(OpportunityDocument, OpportunityDocument.opportunity_id == Opportunity.id)
+                .where(
+                    Opportunity.status != "archived",
+                    or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                    Opportunity.synopsis_description.isnot(None),
+                    OpportunityDocument.id.is_(None),
+                )
+            )
+            result = await session.execute(stmt)
+            opps = result.scalars().unique().all()
+
+            logger.info(f"Batch link extraction: {len(opps)} opportunities to scan")
+            total_created = 0
+
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=30.0,
+                headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
+            ) as client:
+                for i, opp in enumerate(opps):
+                    try:
+                        created = await self.extract_linked_documents(session, opp, client=client)
+                        if created > 0:
+                            await session.commit()
+                            total_created += created
+                            logger.info(f"  [{i+1}/{len(opps)}] {opp.opportunity_id}: {created} linked docs")
+                    except Exception as e:
+                        logger.warning(f"  [{i+1}/{len(opps)}] {opp.opportunity_id}: error - {e}")
+                        await session.rollback()
+
+                    # Rate limit
+                    if i % 10 == 9:
+                        await asyncio.sleep(1)
+
+            logger.info(f"Batch link extraction complete: {total_created} total docs created")
+            return total_created
+
     async def process_pending_documents(self):
         """Batch orchestrator: download, OCR, chunk, embed all pending documents."""
         if self.is_processing:

@@ -942,6 +942,18 @@ async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_d
     })
 
 
+@router.post("/doc-sync/extract-links", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def extract_linked_documents(request: Request, db: AsyncSession = Depends(get_db)):
+    """Batch extract linked documents from descriptions for opportunities without Grants.gov docs."""
+    import asyncio
+    from app.services.document_service import document_service
+    if document_service.is_processing:
+        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot extract links while document processing is in progress.</div>")
+
+    asyncio.create_task(document_service.batch_extract_linked_documents())
+    return HTMLResponse("<div class='alert alert-success py-2'><i class='bi bi-link-45deg'></i> Link extraction started in background. Refresh status to monitor progress.</div>")
+
+
 @router.get("/doc-sync/errors", response_class=HTMLResponse)
 async def doc_sync_errors(request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.document_service import document_service

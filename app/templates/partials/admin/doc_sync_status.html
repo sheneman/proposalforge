@@ -128,6 +128,13 @@
             hx-swap="innerHTML">
         <i class="bi bi-play-circle"></i> Process Pending Documents
     </button>
+    <button class="btn btn-outline-info btn-sm"
+            hx-post="/admin/doc-sync/extract-links"
+            hx-target="#doc-sync-status"
+            hx-swap="innerHTML"
+            hx-confirm="Scan all open opportunities without documents and fetch linked content from their descriptions?">
+        <i class="bi bi-link-45deg"></i> Extract Links
+    </button>
     <button class="btn btn-outline-warning btn-sm"
             hx-post="/admin/doc-sync/reset"
             hx-target="#doc-sync-status"

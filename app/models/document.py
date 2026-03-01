@@ -22,6 +22,7 @@ class OpportunityDocument(Base):
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     file_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     folder_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="grants_gov")
 
     local_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     download_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")

@@ -920,10 +920,10 @@ async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_d
 
     await db.execute(
         text("""UPDATE opportunity_documents
-                SET download_status = 'pending',
-                    ocr_status = 'pending',
+                SET ocr_status = 'pending',
                     embed_status = 'pending',
-                    error_message = NULL""")
+                    error_message = NULL
+                WHERE download_status = 'downloaded'""")
     )
     await db.commit()
 

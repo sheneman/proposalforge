@@ -4,11 +4,11 @@ from datetime import date
 from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Opportunity
+from app.models import Opportunity, OpportunityDocument
 from app.services.search_service import search_service
 from app.services.researcher_search_service import researcher_search_service
 from app.services.sync_service import sync_service
@@ -67,6 +67,21 @@ async def search_page(
     )
     facets = await search_service.get_facets(db, status_list)
 
+    # Batch query document counts for this page of results
+    opp_internal_ids = [opp.id for opp in results["opportunities"]]
+    doc_counts = {}
+    if opp_internal_ids:
+        stmt = (
+            select(
+                OpportunityDocument.opportunity_id,
+                func.count(OpportunityDocument.id),
+            )
+            .where(OpportunityDocument.opportunity_id.in_(opp_internal_ids))
+            .group_by(OpportunityDocument.opportunity_id)
+        )
+        rows = await db.execute(stmt)
+        doc_counts = {row[0]: row[1] for row in rows.all()}
+
     context = {
         "request": request,
         "opportunities": results["opportunities"],
@@ -81,6 +96,7 @@ async def search_page(
         "sort_by": sort_by,
         "sort_order": sort_order,
         "today": date.today(),
+        "doc_counts": doc_counts,
     }
 
     # If HTMX request, return partial

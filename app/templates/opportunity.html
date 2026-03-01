@@ -153,6 +153,13 @@
                 {% endif %}
             </div>
         </div>
+
+        <!-- Documents (lazy-loaded) -->
+        <div id="opportunity-documents"
+             hx-get="/api/opportunities/{{ opp.opportunity_id }}/documents"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+        </div>
     </div>
 
     <!-- Sidebar -->

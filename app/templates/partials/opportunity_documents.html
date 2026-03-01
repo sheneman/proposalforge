@@ -1,0 +1,120 @@
+{% if documents %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-header bg-white border-0">
+        <h6 class="mb-0 text-navy"><i class="bi bi-file-earmark-text"></i> Documents ({{ documents|length }})</h6>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>File</th>
+                        <th>Category</th>
+                        <th>Size</th>
+                        <th>Pipeline</th>
+                        <th>Text / Chunks</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for doc in documents %}
+                    <tr>
+                        <td>
+                            <div class="fw-semibold" style="max-width:220px;" title="{{ doc.file_name }}">
+                                {{ doc.file_name | truncate(40) }}
+                            </div>
+                            {% if doc.file_description %}
+                            <small class="text-muted">{{ doc.file_description | truncate(60) }}</small>
+                            {% endif %}
+                            {% if doc.folder_name %}
+                            <br><small class="text-muted"><i class="bi bi-folder"></i> {{ doc.folder_name }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if doc.doc_category == 'rfp_rfa' %}
+                                <span class="badge bg-success">RFP/RFA</span>
+                            {% elif doc.doc_category == 'nofo' %}
+                                <span class="badge bg-primary">NOFO</span>
+                            {% elif doc.doc_category == 'budget_template' %}
+                                <span class="badge bg-teal text-white" style="background-color:#20c997!important;">Budget</span>
+                            {% elif doc.doc_category == 'application_form' %}
+                                <span class="badge bg-warning text-dark">Application</span>
+                            {% elif doc.doc_category == 'amendment' %}
+                                <span class="badge text-white" style="background-color:#fd7e14!important;">Amendment</span>
+                            {% elif doc.doc_category == 'instructions' %}
+                                <span class="badge bg-info text-dark">Instructions</span>
+                            {% elif doc.doc_category %}
+                                <span class="badge bg-secondary">{{ doc.doc_category }}</span>
+                            {% else %}
+                                <span class="badge bg-light text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-nowrap">
+                            {% if doc.file_size %}
+                                {% if doc.file_size >= 1048576 %}
+                                    {{ "%.1f" | format(doc.file_size / 1048576) }} MB
+                                {% elif doc.file_size >= 1024 %}
+                                    {{ "%.0f" | format(doc.file_size / 1024) }} KB
+                                {% else %}
+                                    {{ doc.file_size }} B
+                                {% endif %}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        <td class="text-nowrap">
+                            {% macro status_badge(label, status) %}
+                                {% if status == 'done' %}
+                                    <span class="badge bg-success" title="{{ label }}: done">{{ label }}</span>
+                                {% elif status == 'processing' %}
+                                    <span class="badge bg-warning text-dark" title="{{ label }}: processing">{{ label }}</span>
+                                {% elif status == 'error' %}
+                                    <span class="badge bg-danger" title="{{ label }}: error">{{ label }}</span>
+                                {% elif status == 'skipped' %}
+                                    <span class="badge bg-light text-muted" title="{{ label }}: skipped">{{ label }}</span>
+                                {% else %}
+                                    <span class="badge bg-light text-muted" title="{{ label }}: {{ status }}">{{ label }}</span>
+                                {% endif %}
+                            {% endmacro %}
+                            {{ status_badge("DL", doc.download_status) }}
+                            {{ status_badge("OCR", doc.ocr_status) }}
+                            {{ status_badge("CLS", doc.classify_status) }}
+                            {{ status_badge("EMB", doc.embed_status) }}
+                        </td>
+                        <td class="text-nowrap">
+                            {% if doc.extracted_text_length %}
+                                {{ "{:,}".format(doc.extracted_text_length) }} chars
+                            {% else %}
+                                —
+                            {% endif %}
+                            /
+                            {% if doc.chunk_count %}
+                                {{ doc.chunk_count }} chunks
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% if doc.error_message %}
+                    <tr>
+                        <td colspan="5" class="py-1 px-3">
+                            <small class="text-danger"><i class="bi bi-exclamation-triangle"></i> {{ doc.error_message | truncate(200) }}</small>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-header bg-white border-0">
+        <h6 class="mb-0 text-navy"><i class="bi bi-file-earmark-text"></i> Documents</h6>
+    </div>
+    <div class="card-body text-center text-muted py-4">
+        <i class="bi bi-file-earmark-x fs-3 d-block mb-2"></i>
+        No documents found for this opportunity.
+    </div>
+</div>
+{% endif %}

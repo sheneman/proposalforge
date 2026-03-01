@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Opportunity
+from app.models import Opportunity, OpportunityDocument
 
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
+templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("")
@@ -46,6 +48,59 @@ async def get_opportunity(opp_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Opportunity not found")
 
     return _serialize_opp_detail(opp)
+
+
+@router.get("/{opp_id}/documents")
+async def get_opportunity_documents(
+    opp_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    # Resolve Grants.gov opportunity_id -> internal id
+    stmt = select(Opportunity.id).where(Opportunity.opportunity_id == opp_id)
+    result = await db.execute(stmt)
+    internal_id = result.scalar_one_or_none()
+
+    if internal_id is None:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    stmt = (
+        select(OpportunityDocument)
+        .where(OpportunityDocument.opportunity_id == internal_id)
+        .order_by(OpportunityDocument.doc_category, OpportunityDocument.file_name)
+    )
+    result = await db.execute(stmt)
+    documents = result.scalars().all()
+
+    # HTMX request -> return partial
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(
+            "partials/opportunity_documents.html",
+            {"request": request, "documents": documents},
+        )
+
+    # Plain API request -> return JSON
+    return {
+        "documents": [
+            {
+                "id": d.id,
+                "file_name": d.file_name,
+                "file_description": d.file_description,
+                "folder_name": d.folder_name,
+                "doc_category": d.doc_category,
+                "file_size": d.file_size,
+                "mime_type": d.mime_type,
+                "download_status": d.download_status,
+                "ocr_status": d.ocr_status,
+                "classify_status": d.classify_status,
+                "embed_status": d.embed_status,
+                "extracted_text_length": d.extracted_text_length,
+                "chunk_count": d.chunk_count,
+                "error_message": d.error_message,
+            }
+            for d in documents
+        ]
+    }
 
 
 def _serialize_opp(opp: Opportunity) -> dict:

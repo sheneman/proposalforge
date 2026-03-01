@@ -1,0 +1,30 @@
+<div class="modal-header">
+    <h6 class="modal-title text-navy">
+        <i class="bi bi-eye"></i> {{ doc.file_name | truncate(60) }}
+    </h6>
+    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+</div>
+<div class="modal-body p-0">
+    {% if is_pdf %}
+        <iframe src="{{ download_url }}?inline=1"
+                style="width:100%; height:75vh; border:none;"></iframe>
+    {% elif text_content %}
+        <div class="p-3" style="max-height:75vh; overflow-y:auto;">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <small class="text-muted">Extracted text preview</small>
+                <a href="{{ download_url }}" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-download"></i> Download Original
+                </a>
+            </div>
+            <pre class="border rounded p-3 bg-light" style="white-space:pre-wrap; word-wrap:break-word; font-size:0.85rem;">{{ text_content }}</pre>
+        </div>
+    {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-file-earmark-x fs-1 d-block mb-2"></i>
+            <p>Preview not available for this file type.</p>
+            <a href="{{ download_url }}" class="btn btn-primary">
+                <i class="bi bi-download"></i> Download File
+            </a>
+        </div>
+    {% endif %}
+</div>

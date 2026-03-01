@@ -13,6 +13,7 @@
                         <th>Size</th>
                         <th>Pipeline</th>
                         <th>Text / Chunks</th>
+                        <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -93,10 +94,29 @@
                                 —
                             {% endif %}
                         </td>
+                        <td class="text-end text-nowrap">
+                            {% if doc.download_status == 'downloaded' and doc.local_path %}
+                                <a href="/api/opportunities/{{ opp_id }}/documents/{{ doc.id }}/download"
+                                   class="btn btn-sm btn-outline-primary me-1" title="Download">
+                                    <i class="bi bi-download"></i>
+                                </a>
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        title="Preview"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#docPreviewModal"
+                                        hx-get="/api/opportunities/{{ opp_id }}/documents/{{ doc.id }}/preview"
+                                        hx-target="#docPreviewModal .modal-content"
+                                        hx-swap="innerHTML">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                            {% else %}
+                                <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% if doc.error_message %}
                     <tr>
-                        <td colspan="5" class="py-1 px-3">
+                        <td colspan="6" class="py-1 px-3">
                             <small class="text-danger"><i class="bi bi-exclamation-triangle"></i> {{ doc.error_message | truncate(200) }}</small>
                         </td>
                     </tr>
@@ -104,6 +124,15 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<!-- Document Preview Modal -->
+<div class="modal fade" id="docPreviewModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <!-- Content loaded via HTMX -->
         </div>
     </div>
 </div>

@@ -1,8 +1,12 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models import Opportunity, OpportunityDocument
 
@@ -76,7 +80,7 @@ async def get_opportunity_documents(
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             "partials/opportunity_documents.html",
-            {"request": request, "documents": documents},
+            {"request": request, "documents": documents, "opp_id": opp_id},
         )
 
     # Plain API request -> return JSON
@@ -101,6 +105,97 @@ async def get_opportunity_documents(
             for d in documents
         ]
     }
+
+
+async def _resolve_document(
+    opp_id: int, doc_id: int, db: AsyncSession
+) -> tuple[OpportunityDocument, str]:
+    """Validate and resolve a document, returning (doc, resolved_path)."""
+    stmt = select(Opportunity.id).where(Opportunity.opportunity_id == opp_id)
+    result = await db.execute(stmt)
+    internal_id = result.scalar_one_or_none()
+    if internal_id is None:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    stmt = select(OpportunityDocument).where(
+        OpportunityDocument.id == doc_id,
+        OpportunityDocument.opportunity_id == internal_id,
+    )
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc.download_status != "downloaded" or not doc.local_path:
+        raise HTTPException(status_code=404, detail="Document file not available")
+
+    resolved = os.path.realpath(doc.local_path)
+    storage_root = os.path.realpath(settings.DOCUMENT_STORAGE_PATH)
+    if not resolved.startswith(storage_root + os.sep):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return doc, resolved
+
+
+@router.get("/{opp_id}/documents/{doc_id}/download")
+async def download_document(
+    opp_id: int,
+    doc_id: int,
+    inline: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
+    doc, resolved = await _resolve_document(opp_id, doc_id, db)
+    media_type = doc.mime_type or "application/octet-stream"
+
+    headers = {}
+    if inline:
+        headers["Content-Disposition"] = f'inline; filename="{doc.file_name}"'
+        return FileResponse(
+            path=resolved,
+            media_type=media_type,
+            headers=headers,
+        )
+
+    return FileResponse(
+        path=resolved,
+        filename=doc.file_name,
+        media_type=media_type,
+    )
+
+
+@router.get("/{opp_id}/documents/{doc_id}/preview")
+async def preview_document(
+    opp_id: int,
+    doc_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    doc, resolved = await _resolve_document(opp_id, doc_id, db)
+
+    is_pdf = (
+        (doc.mime_type or "").lower() == "application/pdf"
+        or doc.file_name.lower().endswith(".pdf")
+    )
+    download_url = f"/api/opportunities/{opp_id}/documents/{doc_id}/download"
+
+    text_content = None
+    if not is_pdf:
+        text_path = resolved + ".txt"
+        if os.path.isfile(text_path):
+            with open(text_path, "r", encoding="utf-8", errors="replace") as f:
+                text_content = f.read(500_000)
+
+    return templates.TemplateResponse(
+        "partials/document_preview.html",
+        {
+            "request": request,
+            "doc": doc,
+            "is_pdf": is_pdf,
+            "download_url": download_url,
+            "text_content": text_content,
+        },
+    )
 
 
 def _serialize_opp(opp: Opportunity) -> dict:

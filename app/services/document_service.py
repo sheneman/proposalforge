@@ -269,49 +269,90 @@ class DocumentService:
 
     async def batch_extract_linked_documents(self):
         """Batch extract linked documents for all open opportunities without Grants.gov docs."""
-        from app.models.opportunity import Opportunity
+        if self.is_processing:
+            logger.warning("Document processing already in progress, skipping link extraction")
+            return 0
 
-        async with async_session() as session:
-            today = date.today()
-            # Find open opportunities with no documents at all
-            stmt = (
-                select(Opportunity)
-                .outerjoin(OpportunityDocument, OpportunityDocument.opportunity_id == Opportunity.id)
-                .where(
-                    Opportunity.status != "archived",
-                    or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
-                    Opportunity.synopsis_description.isnot(None),
-                    OpportunityDocument.id.is_(None),
+        self.is_processing = True
+        self._cancel_requested = False
+        self.processing_stats = {
+            "started": datetime.utcnow().isoformat(),
+            "total": 0,
+            "scanned": 0,
+            "downloaded": 0,
+            "errors": 0,
+            "phase": "extracting links",
+        }
+        await self._publish_stats()
+
+        try:
+            from app.models.opportunity import Opportunity
+
+            async with async_session() as session:
+                today = date.today()
+                # Find open opportunities with no documents at all
+                stmt = (
+                    select(Opportunity)
+                    .outerjoin(OpportunityDocument, OpportunityDocument.opportunity_id == Opportunity.id)
+                    .where(
+                        Opportunity.status != "archived",
+                        or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                        Opportunity.synopsis_description.isnot(None),
+                        OpportunityDocument.id.is_(None),
+                    )
                 )
-            )
-            result = await session.execute(stmt)
-            opps = result.scalars().unique().all()
+                result = await session.execute(stmt)
+                opps = result.scalars().unique().all()
 
-            logger.info(f"Batch link extraction: {len(opps)} opportunities to scan")
-            total_created = 0
+                self.processing_stats["total"] = len(opps)
+                await self._publish_stats()
+                logger.info(f"Batch link extraction: {len(opps)} opportunities to scan")
+                total_created = 0
 
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=30.0,
-                headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
-            ) as client:
-                for i, opp in enumerate(opps):
-                    try:
-                        created = await self.extract_linked_documents(session, opp, client=client)
-                        if created > 0:
-                            await session.commit()
-                            total_created += created
-                            logger.info(f"  [{i+1}/{len(opps)}] {opp.opportunity_id}: {created} linked docs")
-                    except Exception as e:
-                        logger.warning(f"  [{i+1}/{len(opps)}] {opp.opportunity_id}: error - {e}")
-                        await session.rollback()
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=30.0,
+                    headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
+                ) as client:
+                    for i, opp in enumerate(opps):
+                        if self._cancel_requested:
+                            logger.info("Link extraction cancelled")
+                            self.processing_stats["phase"] = "cancelled"
+                            break
 
-                    # Rate limit
-                    if i % 10 == 9:
-                        await asyncio.sleep(1)
+                        try:
+                            created = await self.extract_linked_documents(session, opp, client=client)
+                            if created > 0:
+                                await session.commit()
+                                total_created += created
+                                self.processing_stats["downloaded"] = total_created
+                                logger.info(f"  [{i+1}/{len(opps)}] {opp.opportunity_id}: {created} linked docs")
+                        except Exception as e:
+                            logger.warning(f"  [{i+1}/{len(opps)}] {opp.opportunity_id}: error - {e}")
+                            self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
+                            await session.rollback()
 
-            logger.info(f"Batch link extraction complete: {total_created} total docs created")
-            return total_created
+                        self.processing_stats["scanned"] = i + 1
+                        if i % 5 == 4:
+                            await self._publish_stats()
+
+                        # Rate limit
+                        if i % 10 == 9:
+                            await asyncio.sleep(1)
+
+                if self.processing_stats["phase"] != "cancelled":
+                    self.processing_stats["phase"] = "completed"
+                self.processing_stats["completed"] = datetime.utcnow().isoformat()
+                logger.info(f"Batch link extraction complete: {total_created} total docs created")
+                return total_created
+
+        except Exception as e:
+            logger.error(f"Batch link extraction failed: {e}", exc_info=True)
+            self.processing_stats["error"] = str(e)[:500]
+            return 0
+        finally:
+            self.is_processing = False
+            await self._publish_stats()
 
     async def process_pending_documents(self):
         """Batch orchestrator: download, OCR, chunk, embed all pending documents."""

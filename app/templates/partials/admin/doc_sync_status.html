@@ -10,48 +10,84 @@
 </div>
 
 {% set total = stats.get("total", 0) %}
-{% set downloaded = stats.get("downloaded", 0) %}
-{% set ocr_done = stats.get("ocr_completed", 0) %}
-{% set classified = stats.get("classified", 0) %}
-{% set embedded = stats.get("embedded", 0) %}
-{% set errors = stats.get("errors", 0) %}
-{% set processed = downloaded + ocr_done + classified + embedded + errors %}
-{% set pct = ((processed / (total * 4) * 100) | round(1)) if total > 0 else 0 %}
+{% set phase = stats.get("phase", "starting") %}
 
-<div class="progress mb-3" style="height: 24px;">
-    <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
-         role="progressbar"
-         style="width: {{ pct }}%">
-        {{ pct }}%
-    </div>
-</div>
+{% if phase == "extracting links" %}
+    {% set scanned = stats.get("scanned", 0) %}
+    {% set downloaded = stats.get("downloaded", 0) %}
+    {% set errors = stats.get("errors", 0) %}
+    {% set pct = ((scanned / total * 100) | round(1)) if total > 0 else 0 %}
 
-<div class="row text-center mb-3">
-    <div class="col">
-        <div class="fw-bold">{{ "{:,}".format(total) }}</div>
-        <small class="text-muted">Total Docs</small>
+    <div class="progress mb-3" style="height: 24px;">
+        <div class="progress-bar bg-info progress-bar-striped progress-bar-animated"
+             role="progressbar"
+             style="width: {{ pct }}%">
+            {{ pct }}%
+        </div>
     </div>
-    <div class="col">
-        <div class="fw-bold text-info">{{ "{:,}".format(downloaded) }}</div>
-        <small class="text-muted">Downloaded</small>
+
+    <div class="row text-center mb-3">
+        <div class="col">
+            <div class="fw-bold">{{ "{:,}".format(total) }}</div>
+            <small class="text-muted">Opportunities</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-primary">{{ "{:,}".format(scanned) }}</div>
+            <small class="text-muted">Scanned</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-success">{{ "{:,}".format(downloaded) }}</div>
+            <small class="text-muted">Docs Found</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
+            <small class="text-muted">Errors</small>
+        </div>
     </div>
-    <div class="col">
-        <div class="fw-bold text-primary">{{ "{:,}".format(ocr_done) }}</div>
-        <small class="text-muted">OCR'd</small>
+{% else %}
+    {% set downloaded = stats.get("downloaded", 0) %}
+    {% set ocr_done = stats.get("ocr_completed", 0) %}
+    {% set classified = stats.get("classified", 0) %}
+    {% set embedded = stats.get("embedded", 0) %}
+    {% set errors = stats.get("errors", 0) %}
+    {% set processed = downloaded + ocr_done + classified + embedded + errors %}
+    {% set pct = ((processed / (total * 4) * 100) | round(1)) if total > 0 else 0 %}
+
+    <div class="progress mb-3" style="height: 24px;">
+        <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
+             role="progressbar"
+             style="width: {{ pct }}%">
+            {{ pct }}%
+        </div>
     </div>
-    <div class="col">
-        <div class="fw-bold" style="color: #7c3aed;">{{ "{:,}".format(classified) }}</div>
-        <small class="text-muted">Classified</small>
+
+    <div class="row text-center mb-3">
+        <div class="col">
+            <div class="fw-bold">{{ "{:,}".format(total) }}</div>
+            <small class="text-muted">Total Docs</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-info">{{ "{:,}".format(downloaded) }}</div>
+            <small class="text-muted">Downloaded</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-primary">{{ "{:,}".format(ocr_done) }}</div>
+            <small class="text-muted">OCR'd</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold" style="color: #7c3aed;">{{ "{:,}".format(classified) }}</div>
+            <small class="text-muted">Classified</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-success">{{ "{:,}".format(embedded) }}</div>
+            <small class="text-muted">Embedded</small>
+        </div>
+        <div class="col">
+            <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
+            <small class="text-muted">Errors</small>
+        </div>
     </div>
-    <div class="col">
-        <div class="fw-bold text-success">{{ "{:,}".format(embedded) }}</div>
-        <small class="text-muted">Embedded</small>
-    </div>
-    <div class="col">
-        <div class="fw-bold text-danger">{{ "{:,}".format(errors) }}</div>
-        <small class="text-muted">Errors</small>
-    </div>
-</div>
+{% endif %}
 
 {% if is_admin %}
 <div class="text-end">

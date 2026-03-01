@@ -344,18 +344,84 @@ class DocumentService:
                     self.processing_stats["phase"] = "completed"
                 self.processing_stats["completed"] = datetime.utcnow().isoformat()
                 logger.info(f"Batch link extraction complete: {total_created} total docs created")
-                return total_created
 
         except Exception as e:
             logger.error(f"Batch link extraction failed: {e}", exc_info=True)
             self.processing_stats["error"] = str(e)[:500]
-            return 0
         finally:
             self.is_processing = False
             await self._publish_stats()
 
-    async def process_pending_documents(self):
-        """Batch orchestrator: download, OCR, chunk, embed all pending documents."""
+        # Chain into document processing, skip link extraction since we just did it
+        if not self._cancel_requested:
+            logger.info("Chaining into document processing pipeline...")
+            await self.process_pending_documents(skip_link_extraction=True)
+
+    async def _inline_link_extraction(self):
+        """Scan open opportunities without docs and extract linked documents.
+
+        Called inline during process_pending_documents (self.is_processing already True).
+        """
+        from app.models.opportunity import Opportunity
+
+        self.processing_stats["phase"] = "extracting links"
+        await self._publish_stats()
+
+        async with async_session() as session:
+            today = date.today()
+            stmt = (
+                select(Opportunity)
+                .outerjoin(OpportunityDocument, OpportunityDocument.opportunity_id == Opportunity.id)
+                .where(
+                    Opportunity.status != "archived",
+                    or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                    Opportunity.synopsis_description.isnot(None),
+                    OpportunityDocument.id.is_(None),
+                )
+            )
+            result = await session.execute(stmt)
+            opps = result.scalars().unique().all()
+
+            if not opps:
+                logger.info("No opportunities without documents to scan for links")
+                return
+
+            self.processing_stats["total"] = len(opps)
+            self.processing_stats["scanned"] = 0
+            self.processing_stats["downloaded"] = 0
+            await self._publish_stats()
+            logger.info(f"Link extraction: scanning {len(opps)} opportunities")
+
+            total_created = 0
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=30.0,
+                headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
+            ) as client:
+                for i, opp in enumerate(opps):
+                    if self._cancel_requested:
+                        break
+                    try:
+                        created = await self.extract_linked_documents(session, opp, client=client)
+                        if created > 0:
+                            await session.commit()
+                            total_created += created
+                            self.processing_stats["downloaded"] = total_created
+                    except Exception as e:
+                        logger.warning(f"Link extraction for {opp.opportunity_id}: {e}")
+                        self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
+                        await session.rollback()
+
+                    self.processing_stats["scanned"] = i + 1
+                    if i % 5 == 4:
+                        await self._publish_stats()
+                    if i % 10 == 9:
+                        await asyncio.sleep(1)
+
+            logger.info(f"Link extraction complete: {total_created} docs from {len(opps)} opportunities")
+
+    async def process_pending_documents(self, skip_link_extraction: bool = False):
+        """Batch orchestrator: extract links, download, OCR, chunk, embed all pending documents."""
         if self.is_processing:
             logger.warning("Document processing already in progress")
             return
@@ -375,6 +441,10 @@ class DocumentService:
         await self._publish_stats()
 
         try:
+            # Phase 0: Extract linked documents from descriptions
+            if not skip_link_extraction and not self._cancel_requested:
+                await self._inline_link_extraction()
+
             async with async_session() as session:
                 # Get settings once
                 ocr_settings = await settings_service.get_ocr_settings(session)

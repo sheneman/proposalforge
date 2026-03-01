@@ -882,7 +882,7 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
         "is_processing": True,
         "phase": "starting",
         "total": counts.get("pending", 0),
-        "downloaded": 0, "ocr_completed": 0, "embedded": 0, "errors": 0,
+        "downloaded": 0, "ocr_completed": 0, "classified": 0, "embedded": 0, "errors": 0,
     }
     try:
         pipe = cache_service._redis.pipeline()
@@ -921,6 +921,8 @@ async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_d
     await db.execute(
         text("""UPDATE opportunity_documents
                 SET ocr_status = 'pending',
+                    classify_status = 'pending',
+                    doc_category = NULL,
                     embed_status = 'pending',
                     error_message = NULL
                 WHERE download_status = 'downloaded'""")

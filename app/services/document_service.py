@@ -99,6 +99,7 @@ class DocumentService:
             "total": 0,
             "downloaded": 0,
             "ocr_completed": 0,
+            "classified": 0,
             "embedded": 0,
             "errors": 0,
             "phase": "starting",
@@ -107,9 +108,10 @@ class DocumentService:
 
         try:
             async with async_session() as session:
-                # Get OCR settings once
+                # Get settings once
                 ocr_settings = await settings_service.get_ocr_settings(session)
                 embed_settings = await settings_service.get_embedding_settings(session)
+                llm_settings = await settings_service.get_llm_settings(session)
 
                 # Reset all failed docs back to pending and clear errors
                 await session.execute(
@@ -120,6 +122,9 @@ class DocumentService:
                 )
                 await session.execute(
                     text("UPDATE opportunity_documents SET embed_status = 'pending', error_message = NULL WHERE embed_status = 'failed'")
+                )
+                await session.execute(
+                    text("UPDATE opportunity_documents SET classify_status = 'pending', error_message = NULL WHERE classify_status = 'failed'")
                 )
                 await session.commit()
                 logger.info("Reset failed documents to pending")
@@ -161,6 +166,7 @@ class DocumentService:
                         or_(
                             OpportunityDocument.download_status == "pending",
                             OpportunityDocument.ocr_status == "pending",
+                            OpportunityDocument.classify_status == "pending",
                             OpportunityDocument.embed_status == "pending",
                         ),
                     )
@@ -183,6 +189,11 @@ class DocumentService:
             model = embed_settings.get("model", "")
             api_key = embed_settings.get("api_key", "")
             shared_embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed") if base_url and model else None
+
+            llm_base = llm_settings.get("base_url", "")
+            llm_model = llm_settings.get("model", "")
+            llm_key = llm_settings.get("api_key", "")
+            shared_llm_client = AsyncOpenAI(base_url=llm_base, api_key=llm_key or "not-needed") if llm_base and llm_model else None
             shared_chroma_client = chromadb.HttpClient(
                 host=settings.CHROMADB_HOST,
                 port=settings.CHROMADB_PORT,
@@ -219,9 +230,16 @@ class DocumentService:
                                 if doc.download_status == "downloaded" and doc.ocr_status == "pending":
                                     await self._ocr_document(doc, ocr_settings, session, ocr_client=shared_ocr_client)
 
-                                # Skip embedding for unsupported formats
-                                if doc.ocr_status == "skipped" and doc.embed_status == "pending":
-                                    doc.embed_status = "skipped"
+                                # Skip classification and embedding for unsupported formats
+                                if doc.ocr_status == "skipped":
+                                    if doc.classify_status == "pending":
+                                        doc.classify_status = "skipped"
+                                    if doc.embed_status == "pending":
+                                        doc.embed_status = "skipped"
+
+                                # Classify after OCR, before embedding
+                                if doc.ocr_status == "completed" and doc.classify_status == "pending":
+                                    await self._classify_document(doc, llm_settings, session, llm_client=shared_llm_client)
 
                                 if doc.ocr_status == "completed" and doc.embed_status == "pending":
                                     await self._embed_document(
@@ -234,6 +252,7 @@ class DocumentService:
                                 all_done = (
                                     doc.download_status == "downloaded"
                                     and doc.ocr_status in ("completed", "skipped")
+                                    and doc.classify_status in ("completed", "skipped")
                                     and doc.embed_status in ("completed", "skipped")
                                 )
                                 if all_done and doc.error_message:
@@ -547,6 +566,120 @@ class DocumentService:
                 return rtf_to_text(f.read())
 
         return await loop.run_in_executor(None, _extract)
+
+    _CLASSIFICATION_CATEGORIES = [
+        "rfp_rfa",           # The full solicitation (RFP, RFA, RFQ, BAA, etc.)
+        "nofo",              # Notice of Funding Opportunity
+        "budget_template",   # Budget forms, templates, examples
+        "application_form",  # SF424, fillable application forms
+        "legal_compliance",  # Privacy Act statements, certifications, representations
+        "amendment",         # Amendments, modifications to original solicitation
+        "instructions",      # How-to guides, submission instructions, README
+        "presentation",      # Slide decks, briefings
+        "data_spreadsheet",  # Data files, spreadsheets, tracking sheets
+        "other",             # Anything that doesn't fit above
+    ]
+
+    _CLASSIFY_SYSTEM_PROMPT = """You are a document classifier for federal grant opportunities. Given the beginning of a document, classify it into exactly one category.
+
+Categories:
+- rfp_rfa: The full solicitation document (RFP, RFA, RFQ, BAA, Notice of Funding Opportunity that IS the solicitation itself)
+- nofo: Notice of Funding Opportunity (NOFO) — a standalone funding announcement
+- budget_template: Budget forms, budget templates, cost examples
+- application_form: SF424, fillable application forms, registration forms
+- legal_compliance: Privacy Act statements, certifications, representations, compliance documents
+- amendment: Amendments or modifications to the original solicitation
+- instructions: How-to guides, submission instructions, README files, application guides
+- presentation: Slide decks, briefings, webinar materials
+- data_spreadsheet: Data files, spreadsheets, tracking sheets
+- other: Anything that doesn't fit the above categories
+
+Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|medium|low"}"""
+
+    async def _classify_document(
+        self,
+        doc: OpportunityDocument,
+        llm_settings: dict,
+        session: AsyncSession,
+        llm_client=None,
+    ):
+        """Classify a document using LLM based on its extracted text."""
+        text_path = doc.local_path + ".txt"
+        if not os.path.exists(text_path):
+            doc.classify_status = "failed"
+            doc.error_message = "Extracted text file not found for classification"
+            return
+
+        # Read first ~2000 tokens worth of text (rough estimate: 4 chars per token)
+        try:
+            with open(text_path, "r", encoding="utf-8") as f:
+                preview_text = f.read(8000)
+        except Exception as e:
+            doc.classify_status = "failed"
+            doc.error_message = f"Classification read error: {str(e)[:200]}"
+            return
+
+        if not preview_text.strip():
+            doc.doc_category = "other"
+            doc.classify_status = "completed"
+            return
+
+        base_url = llm_settings.get("base_url", "")
+        model = llm_settings.get("model", "")
+        api_key = llm_settings.get("api_key", "")
+
+        if not base_url or not model:
+            # No LLM configured — skip classification silently
+            doc.doc_category = "other"
+            doc.classify_status = "skipped"
+            return
+
+        try:
+            if llm_client is None:
+                from openai import AsyncOpenAI
+                llm_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+
+            user_msg = f"File name: {doc.file_name}\n\nDocument text (first ~2000 tokens):\n{preview_text}"
+
+            response = await llm_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": self._CLASSIFY_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=60,
+                temperature=0.0,
+                timeout=30,
+            )
+
+            raw = (response.choices[0].message.content or "").strip()
+
+            # Parse JSON — strip markdown fences if present
+            import json
+            cleaned = raw
+            if "```" in cleaned:
+                cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
+                cleaned = cleaned.replace("```", "").strip()
+            # Try to extract JSON object
+            match = re.search(r'\{[^}]+\}', cleaned)
+            if match:
+                parsed = json.loads(match.group())
+            else:
+                parsed = json.loads(cleaned)
+
+            category = parsed.get("category", "other").strip().lower()
+            if category not in self._CLASSIFICATION_CATEGORIES:
+                category = "other"
+
+            doc.doc_category = category
+            doc.classify_status = "completed"
+            self.processing_stats["classified"] = self.processing_stats.get("classified", 0) + 1
+
+        except Exception as e:
+            logger.warning(f"Classification failed for document {doc.id}, defaulting to 'other': {e}")
+            doc.doc_category = "other"
+            doc.classify_status = "completed"
+            self.processing_stats["classified"] = self.processing_stats.get("classified", 0) + 1
 
     async def _embed_document(self, doc: OpportunityDocument, embed_settings: dict, ocr_settings: dict, session: AsyncSession, embed_client=None, chroma_collection=None):
         """Chunk extracted text, generate embeddings, store in ChromaDB."""
@@ -942,6 +1075,9 @@ class DocumentService:
             ocr_completed = await session.execute(
                 base.where(OpportunityDocument.ocr_status == "completed")
             )
+            classified = await session.execute(
+                base.where(OpportunityDocument.classify_status == "completed")
+            )
             embedded = await session.execute(
                 base.where(OpportunityDocument.embed_status == "completed")
             )
@@ -956,6 +1092,7 @@ class DocumentService:
                 base.where(or_(
                     OpportunityDocument.download_status == "pending",
                     OpportunityDocument.ocr_status == "pending",
+                    OpportunityDocument.classify_status == "pending",
                     OpportunityDocument.embed_status == "pending",
                 ))
             )
@@ -964,6 +1101,7 @@ class DocumentService:
                 "total": total.scalar() or 0,
                 "downloaded": downloaded.scalar() or 0,
                 "ocr_completed": ocr_completed.scalar() or 0,
+                "classified": classified.scalar() or 0,
                 "embedded": embedded.scalar() or 0,
                 "errors": errors.scalar() or 0,
                 "pending": pending.scalar() or 0,

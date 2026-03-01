@@ -26,6 +26,8 @@ class OpportunityDocument(Base):
     local_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     download_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     ocr_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    classify_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    doc_category: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     embed_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
 
     extracted_text_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -53,6 +55,7 @@ class OpportunityDocument(Base):
         Index("ix_doc_download_status", "download_status"),
         Index("ix_doc_ocr_status", "ocr_status"),
         Index("ix_doc_embed_status", "embed_status"),
+        Index("ix_doc_classify_status", "classify_status"),
     )
 
 

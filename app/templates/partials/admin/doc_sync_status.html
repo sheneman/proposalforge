@@ -12,10 +12,11 @@
 {% set total = stats.get("total", 0) %}
 {% set downloaded = stats.get("downloaded", 0) %}
 {% set ocr_done = stats.get("ocr_completed", 0) %}
+{% set classified = stats.get("classified", 0) %}
 {% set embedded = stats.get("embedded", 0) %}
 {% set errors = stats.get("errors", 0) %}
-{% set processed = downloaded + ocr_done + embedded + errors %}
-{% set pct = ((processed / (total * 3) * 100) | round(1)) if total > 0 else 0 %}
+{% set processed = downloaded + ocr_done + classified + embedded + errors %}
+{% set pct = ((processed / (total * 4) * 100) | round(1)) if total > 0 else 0 %}
 
 <div class="progress mb-3" style="height: 24px;">
     <div class="progress-bar bg-success progress-bar-striped progress-bar-animated"
@@ -37,6 +38,10 @@
     <div class="col">
         <div class="fw-bold text-primary">{{ "{:,}".format(ocr_done) }}</div>
         <small class="text-muted">OCR'd</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: #7c3aed;">{{ "{:,}".format(classified) }}</div>
+        <small class="text-muted">Classified</small>
     </div>
     <div class="col">
         <div class="fw-bold text-success">{{ "{:,}".format(embedded) }}</div>
@@ -73,6 +78,10 @@
     <div class="col">
         <div class="fw-bold text-primary">{{ "{:,}".format(counts.get("ocr_completed", 0)) }}</div>
         <small class="text-muted">OCR'd</small>
+    </div>
+    <div class="col">
+        <div class="fw-bold" style="color: #7c3aed;">{{ "{:,}".format(counts.get("classified", 0)) }}</div>
+        <small class="text-muted">Classified</small>
     </div>
     <div class="col">
         <div class="fw-bold text-success">{{ "{:,}".format(counts.get("embedded", 0)) }}</div>

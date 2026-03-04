@@ -348,9 +348,17 @@ class DocumentService:
         except Exception as e:
             logger.error(f"Batch link extraction failed: {e}", exc_info=True)
             self.processing_stats["error"] = str(e)[:500]
-        finally:
-            self.is_processing = False
-            await self._publish_stats()
+
+        # Create synopsis docs for remaining doc-less opportunities
+        if not self._cancel_requested:
+            try:
+                self.is_processing = True  # ensure flag is set
+                await self._create_synopsis_documents_inline()
+            except Exception as e:
+                logger.error(f"Synopsis doc creation failed: {e}", exc_info=True)
+
+        self.is_processing = False
+        await self._publish_stats()
 
         # Chain into document processing, skip link extraction since we just did it
         if not self._cancel_requested:
@@ -419,6 +427,360 @@ class DocumentService:
                         await asyncio.sleep(1)
 
             logger.info(f"Link extraction complete: {total_created} docs from {len(opps)} opportunities")
+
+        # After link extraction, create synopsis docs for remaining doc-less opportunities
+        if not self._cancel_requested:
+            await self._create_synopsis_documents_inline()
+
+    async def _create_synopsis_documents_inline(self):
+        """Create synthetic documents from synopsis descriptions for opportunities still without docs.
+
+        Called inline during _inline_link_extraction (self.is_processing already True).
+        """
+        self.processing_stats["phase"] = "creating synopsis docs"
+        await self._publish_stats()
+
+        async with async_session() as session:
+            today = date.today()
+            # Find open opportunities with no documents but substantial descriptions
+            stmt = (
+                select(Opportunity)
+                .outerjoin(OpportunityDocument, OpportunityDocument.opportunity_id == Opportunity.id)
+                .where(
+                    Opportunity.status != "archived",
+                    or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                    Opportunity.synopsis_description.isnot(None),
+                    func.length(Opportunity.synopsis_description) > 500,
+                    OpportunityDocument.id.is_(None),
+                )
+            )
+            result = await session.execute(stmt)
+            opps = result.scalars().unique().all()
+
+            if not opps:
+                logger.info("No opportunities need synopsis documents")
+                return
+
+            logger.info(f"Creating synopsis documents for {len(opps)} opportunities")
+            created = 0
+
+            for opp in opps:
+                if self._cancel_requested:
+                    break
+                try:
+                    # Build a stable attachment_id
+                    att_id = f"synopsis_{opp.id}"
+
+                    # Check if already exists
+                    existing = (await session.execute(
+                        select(OpportunityDocument).where(OpportunityDocument.attachment_id == att_id)
+                    )).scalar_one_or_none()
+                    if existing:
+                        continue
+
+                    # Write synopsis text to disk
+                    opp_dir = os.path.join(settings.DOCUMENT_STORAGE_PATH, str(opp.id))
+                    os.makedirs(opp_dir, exist_ok=True)
+                    dest_path = os.path.join(opp_dir, "Synopsis_Description.txt")
+                    text_path = dest_path + ".txt"  # Companion extracted text file
+
+                    with open(dest_path, "w", encoding="utf-8") as f:
+                        f.write(opp.synopsis_description)
+                    # Write identical extracted text companion
+                    with open(text_path, "w", encoding="utf-8") as f:
+                        f.write(opp.synopsis_description)
+
+                    doc = OpportunityDocument(
+                        opportunity_id=opp.id,
+                        attachment_id=att_id,
+                        file_name="Synopsis Description.txt",
+                        mime_type="text/plain",
+                        file_size=len(opp.synopsis_description.encode("utf-8")),
+                        file_description="Opportunity synopsis description (auto-generated)",
+                        folder_name="Synopsis",
+                        source="synopsis",
+                        local_path=dest_path,
+                        download_status="downloaded",
+                        ocr_status="completed",
+                        classify_status="pending",
+                        embed_status="pending",
+                        extracted_text_length=len(opp.synopsis_description),
+                    )
+                    session.add(doc)
+                    created += 1
+
+                    if created % 100 == 0:
+                        await session.flush()
+
+                except Exception as e:
+                    logger.warning(f"Synopsis doc for opportunity {opp.id}: {e}")
+                    await session.rollback()
+
+            if created > 0:
+                await session.commit()
+            logger.info(f"Created {created} synopsis documents")
+
+    async def create_synopsis_documents(self):
+        """Standalone batch: create synopsis documents for all doc-less opportunities."""
+        if self.is_processing:
+            logger.warning("Document processing already in progress")
+            return 0
+
+        self.is_processing = True
+        self._cancel_requested = False
+        self.processing_stats = {
+            "started": datetime.utcnow().isoformat(),
+            "phase": "creating synopsis docs",
+            "total": 0, "created": 0, "errors": 0,
+        }
+        await self._publish_stats()
+
+        try:
+            await self._create_synopsis_documents_inline()
+        finally:
+            self.is_processing = False
+            self.processing_stats["phase"] = "completed"
+            self.processing_stats["completed"] = datetime.utcnow().isoformat()
+            await self._publish_stats()
+
+    # --- Agency domain mapping for web search ---
+    _AGENCY_DOMAINS = {
+        "NASA": ["nspires.nasaprs.com", "nasa.gov"],
+        "NSF": ["nsf.gov"],
+        "DOE": ["energy.gov", "science.energy.gov"],
+        "DOD": ["grants.darpa.mil", "arl.army.mil", "defense.gov"],
+        "HHS": ["grants.nih.gov", "hrsa.gov", "samhsa.gov", "hhs.gov"],
+        "NIH": ["grants.nih.gov", "nih.gov"],
+        "EPA": ["epa.gov"],
+        "USDA": ["nifa.usda.gov", "usda.gov"],
+        "ED": ["ed.gov"],
+        "DOJ": ["ojp.gov", "justice.gov"],
+        "DOT": ["transportation.gov"],
+        "DOC": ["commerce.gov", "nist.gov", "noaa.gov"],
+        "DHS": ["dhs.gov", "fema.gov"],
+        "DOI": ["doi.gov", "fws.gov", "nps.gov"],
+        "DARPA": ["darpa.mil"],
+    }
+
+    async def search_for_solicitations(self):
+        """Web search for solicitation PDFs for opportunities lacking solicitation docs."""
+        if self.is_processing:
+            logger.warning("Document processing already in progress")
+            return 0
+
+        if not settings.BRAVE_API_KEY:
+            logger.warning("BRAVE_API_KEY not configured, cannot run web search")
+            return 0
+
+        self.is_processing = True
+        self._cancel_requested = False
+        total_found = 0
+        self.processing_stats = {
+            "started": datetime.utcnow().isoformat(),
+            "phase": "web search",
+            "total": 0, "scanned": 0, "downloaded": 0, "errors": 0,
+        }
+        await self._publish_stats()
+
+        try:
+            async with async_session() as session:
+                today = date.today()
+                # Find open opportunities that have no solicitation document
+                from sqlalchemy.orm import aliased
+                SolDoc = aliased(OpportunityDocument)
+                # Subquery: opportunities that already have a solicitation doc
+                has_sol = (
+                    select(SolDoc.opportunity_id)
+                    .where(SolDoc.doc_category == "solicitation")
+                    .correlate(Opportunity)
+                )
+                stmt = (
+                    select(Opportunity)
+                    .where(
+                        Opportunity.status != "archived",
+                        or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                        ~Opportunity.id.in_(has_sol),
+                    )
+                    .limit(200)  # Process in manageable batches
+                )
+                result = await session.execute(stmt)
+                opps = result.scalars().all()
+
+                self.processing_stats["total"] = len(opps)
+                await self._publish_stats()
+                logger.info(f"Web search: {len(opps)} opportunities to search")
+
+                total_found = 0
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=30.0,
+                    headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
+                ) as client:
+                    for i, opp in enumerate(opps):
+                        if self._cancel_requested:
+                            break
+
+                        try:
+                            found = await self._web_search_for_opportunity(opp, session, client)
+                            if found > 0:
+                                await session.commit()
+                                total_found += found
+                                self.processing_stats["downloaded"] = total_found
+                        except Exception as e:
+                            logger.warning(f"Web search for {opp.opportunity_id}: {e}")
+                            self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
+                            await session.rollback()
+
+                        self.processing_stats["scanned"] = i + 1
+                        if i % 5 == 4:
+                            await self._publish_stats()
+                        # Rate limit: respect Brave API limits
+                        await asyncio.sleep(1)
+
+                self.processing_stats["phase"] = "completed"
+                self.processing_stats["completed"] = datetime.utcnow().isoformat()
+                logger.info(f"Web search complete: {total_found} solicitations found")
+
+        except Exception as e:
+            logger.error(f"Web search failed: {e}", exc_info=True)
+            self.processing_stats["error"] = str(e)[:500]
+        finally:
+            self.is_processing = False
+            await self._publish_stats()
+
+        # Chain into document processing to handle newly downloaded docs
+        if not self._cancel_requested and total_found > 0:
+            logger.info("Chaining into document processing pipeline...")
+            await self.process_pending_documents(skip_link_extraction=True)
+
+        return total_found
+
+    async def _web_search_for_opportunity(
+        self, opp, session: AsyncSession, client: httpx.AsyncClient
+    ) -> int:
+        """Search the web for solicitation PDFs for a single opportunity."""
+        title = (opp.opportunity_title or "").strip()
+        opp_number = (opp.opportunity_number or "").strip()
+        agency_code = (opp.agency_code or "").upper()
+
+        if not title and not opp_number:
+            return 0
+
+        # Build search query
+        query_parts = []
+        if opp_number:
+            query_parts.append(f'"{opp_number}"')
+        if title and len(title) < 120:
+            query_parts.append(f'"{title}"')
+        query_parts.append("filetype:pdf")
+
+        # Add agency domain hint if available
+        for prefix, domains in self._AGENCY_DOMAINS.items():
+            if agency_code.startswith(prefix):
+                if domains:
+                    query_parts.append(f"site:{domains[0]}")
+                break
+
+        query = " ".join(query_parts)
+
+        # Call Brave Search API
+        try:
+            resp = await client.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": query, "count": 5},
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip",
+                    "X-Subscription-Token": settings.BRAVE_API_KEY,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning(f"Brave search failed for {opp.opportunity_id}: {e}")
+            return 0
+
+        # Filter for PDF results
+        results = data.get("web", {}).get("results", [])
+        pdf_urls = []
+        for r in results:
+            url = r.get("url", "")
+            if url.lower().endswith(".pdf"):
+                pdf_urls.append(url)
+            elif "pdf" in r.get("meta_url", {}).get("path", "").lower():
+                pdf_urls.append(url)
+
+        if not pdf_urls:
+            return 0
+
+        # Download first matching PDF
+        created = 0
+        for url in pdf_urls[:2]:  # Try at most 2 URLs
+            try:
+                # Generate unique attachment ID from URL
+                url_hash = str(uuid.uuid5(uuid.NAMESPACE_URL, url))[:16]
+                att_id = f"web_{opp.id}_{url_hash}"
+
+                # Check if already exists
+                existing = (await session.execute(
+                    select(OpportunityDocument).where(OpportunityDocument.attachment_id == att_id)
+                )).scalar_one_or_none()
+                if existing:
+                    continue
+
+                # Download the PDF
+                pdf_resp = await client.get(url, timeout=60.0)
+                pdf_resp.raise_for_status()
+
+                content_type = pdf_resp.headers.get("content-type", "")
+                if "pdf" not in content_type and not url.lower().endswith(".pdf"):
+                    continue
+
+                content = pdf_resp.content
+                if len(content) < 1000:  # Skip tiny files
+                    continue
+                if len(content) > 50_000_000:  # Skip >50MB files
+                    continue
+
+                # Save to disk
+                opp_dir = os.path.join(settings.DOCUMENT_STORAGE_PATH, str(opp.id))
+                os.makedirs(opp_dir, exist_ok=True)
+
+                # Extract filename from URL
+                from urllib.parse import urlparse, unquote
+                url_path = urlparse(url).path
+                file_name = unquote(url_path.split("/")[-1]) or "solicitation.pdf"
+
+                dest_path = os.path.join(opp_dir, f"web_{file_name}")
+
+                with open(dest_path, "wb") as f:
+                    f.write(content)
+
+                doc = OpportunityDocument(
+                    opportunity_id=opp.id,
+                    attachment_id=att_id,
+                    file_name=file_name,
+                    mime_type="application/pdf",
+                    file_size=len(content),
+                    file_description=f"Found via web search: {url[:200]}",
+                    folder_name="Web Search",
+                    source="web_search",
+                    local_path=dest_path,
+                    download_status="downloaded",
+                    ocr_status="pending",
+                    classify_status="pending",
+                    embed_status="pending",
+                )
+                session.add(doc)
+                created += 1
+                logger.info(f"  Web search found PDF for {opp.opportunity_id}: {file_name}")
+                break  # One solicitation is enough
+
+            except Exception as e:
+                logger.debug(f"Failed to download {url}: {e}")
+                continue
+
+        return created
 
     async def process_pending_documents(self, skip_link_extraction: bool = False):
         """Batch orchestrator: extract links, download, OCR, chunk, embed all pending documents."""
@@ -906,8 +1268,7 @@ class DocumentService:
         return await loop.run_in_executor(None, _extract)
 
     _CLASSIFICATION_CATEGORIES = [
-        "rfp_rfa",           # The full solicitation (RFP, RFA, RFQ, BAA, etc.)
-        "nofo",              # Notice of Funding Opportunity
+        "solicitation",      # The primary solicitation — RFP, RFA, RFQ, BAA, NOFO, FOA
         "budget_template",   # Budget forms, templates, examples
         "application_form",  # SF424, fillable application forms
         "legal_compliance",  # Privacy Act statements, certifications, representations
@@ -918,11 +1279,64 @@ class DocumentService:
         "other",             # Anything that doesn't fit above
     ]
 
+    # --- Heuristic pre-classification rules ---
+    _HEURISTIC_RULES = {
+        "solicitation": {
+            "filename_patterns": [
+                r'\brfp\b', r'\brfa\b', r'\brfq\b', r'\bbaa\b',
+                r'\bsolicitation\b', r'\bfoa\b', r'\bnofo\b',
+                r'notice.*funding.*opportunity', r'funding.*opportunity.*announcement',
+                r'\bprogram\s*announcement\b', r'\bbroad\s*agency\s*announcement\b',
+            ],
+            "folder_patterns": [
+                r'full\s*announcement', r'solicitation', r'\bbaa\b',
+                r'\brfa\b', r'\brfp\b', r'\bnofo\b', r'notice.*funding',
+                r'funding.*opportunity', r'\bfoa\b',
+            ],
+        },
+        "amendment": {
+            "filename_patterns": [r'\bamendment\b', r'\bmodification\b', r'\baddendum\b'],
+            "folder_patterns": [r'\bamendment\b', r'\bmodification\b'],
+        },
+        "budget_template": {
+            "filename_patterns": [r'\bbudget\b.*\btemplate\b', r'\bbudget\b.*\bform\b', r'\bsf[\-_]?424a\b'],
+            "folder_patterns": [r'\bbudget\b'],
+        },
+        "application_form": {
+            "filename_patterns": [r'\bsf[\-_]?424\b', r'\bapplication\b.*\bform\b', r'\brr_.*form\b'],
+            "folder_patterns": [r'\bapplication\b.*\bform\b', r'\brequired\s*form\b'],
+        },
+        "instructions": {
+            "filename_patterns": [r'\binstructions?\b', r'\bapplication\b.*\bguide\b', r'\breadme\b'],
+            "folder_patterns": [r'\binstructions?\b', r'\bguide\b'],
+        },
+    }
+
+    @classmethod
+    def _heuristic_classify(cls, file_name: str, folder_name: str | None) -> str | None:
+        """Try to classify a document based on filename/folder patterns.
+
+        Returns category string if a confident match is found, None otherwise.
+        """
+        fn_lower = (file_name or "").lower()
+        folder_lower = (folder_name or "").lower()
+
+        for category, rules in cls._HEURISTIC_RULES.items():
+            # Check filename patterns
+            for pattern in rules.get("filename_patterns", []):
+                if re.search(pattern, fn_lower):
+                    return category
+            # Check folder patterns
+            for pattern in rules.get("folder_patterns", []):
+                if folder_lower and re.search(pattern, folder_lower):
+                    return category
+
+        return None
+
     _CLASSIFY_SYSTEM_PROMPT = """You are a document classifier for federal grant opportunities. Given the beginning of a document, classify it into exactly one category.
 
 Categories:
-- rfp_rfa: The full solicitation document (RFP, RFA, RFQ, BAA, Notice of Funding Opportunity that IS the solicitation itself)
-- nofo: Notice of Funding Opportunity (NOFO) — a standalone funding announcement
+- solicitation: The primary solicitation document — RFP, RFA, RFQ, BAA, NOFO, FOA, or similar. This is the main document describing what is being solicited and how to apply.
 - budget_template: Budget forms, budget templates, cost examples
 - application_form: SF424, fillable application forms, registration forms
 - legal_compliance: Privacy Act statements, certifications, representations, compliance documents
@@ -931,6 +1345,15 @@ Categories:
 - presentation: Slide decks, briefings, webinar materials
 - data_spreadsheet: Data files, spreadsheets, tracking sheets
 - other: Anything that doesn't fit the above categories
+
+Examples:
+- "FY2025_BAA_DARPA-PA-25-01.pdf" in folder "Full Announcement" → solicitation
+- "NOFO-HHS-2025-001.pdf" in folder "NOFO" → solicitation
+- "RFA-CA-25-003.pdf" in folder "Full Announcement" → solicitation
+- "SF424_RR_Budget.pdf" in folder "Required Forms" → application_form
+- "Budget_Justification_Template.docx" in folder "Budget" → budget_template
+- "Amendment_003.pdf" in folder "Amendments" → amendment
+- "Application_Guide.pdf" in folder "Instructions" → instructions
 
 Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|medium|low"}"""
 
@@ -941,17 +1364,26 @@ Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|
         session: AsyncSession,
         llm_client=None,
     ):
-        """Classify a document using LLM based on its extracted text."""
+        """Classify a document using heuristics first, then LLM fallback."""
+        # --- Phase 1: Try heuristic classification ---
+        heuristic_result = self._heuristic_classify(doc.file_name, doc.folder_name)
+        if heuristic_result:
+            doc.doc_category = heuristic_result
+            doc.classify_status = "completed"
+            self.processing_stats["classified"] = self.processing_stats.get("classified", 0) + 1
+            return
+
+        # --- Phase 2: LLM-based classification ---
         text_path = doc.local_path + ".txt"
         if not os.path.exists(text_path):
             doc.classify_status = "failed"
             doc.error_message = "Extracted text file not found for classification"
             return
 
-        # Read first ~2000 tokens worth of text (rough estimate: 4 chars per token)
+        # Read first ~3000 tokens worth of text (rough estimate: 4 chars per token)
         try:
             with open(text_path, "r", encoding="utf-8") as f:
-                preview_text = f.read(8000)
+                preview_text = f.read(12000)
         except Exception as e:
             doc.classify_status = "failed"
             doc.error_message = f"Classification read error: {str(e)[:200]}"
@@ -977,7 +1409,8 @@ Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|
                 from openai import AsyncOpenAI
                 llm_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
 
-            user_msg = f"File name: {doc.file_name}\n\nDocument text (first ~2000 tokens):\n{preview_text}"
+            folder_line = f"\nFolder: {doc.folder_name}" if doc.folder_name else ""
+            user_msg = f"File name: {doc.file_name}{folder_line}\n\nDocument text (first ~3000 tokens):\n{preview_text}"
 
             response = await llm_client.chat.completions.create(
                 model=model,
@@ -1006,6 +1439,9 @@ Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|
                 parsed = json.loads(cleaned)
 
             category = parsed.get("category", "other").strip().lower()
+            # Accept legacy category names from LLM and map them
+            if category in ("rfp_rfa", "nofo"):
+                category = "solicitation"
             if category not in self._CLASSIFICATION_CATEGORIES:
                 category = "other"
 

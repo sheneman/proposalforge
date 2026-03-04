@@ -24,6 +24,10 @@
                                 {{ doc.file_name | truncate(40) }}
                                 {% if doc.source == 'linked' %}
                                 <i class="bi bi-link-45deg text-info" title="Linked from description"></i>
+                                {% elif doc.source == 'synopsis' %}
+                                <i class="bi bi-file-text text-muted" title="Auto-generated from synopsis"></i>
+                                {% elif doc.source == 'web_search' %}
+                                <i class="bi bi-search text-success" title="Found via web search"></i>
                                 {% endif %}
                             </div>
                             {% if doc.file_description %}
@@ -34,10 +38,8 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if doc.doc_category == 'rfp_rfa' %}
-                                <span class="badge bg-success">RFP/RFA</span>
-                            {% elif doc.doc_category == 'nofo' %}
-                                <span class="badge bg-primary">NOFO</span>
+                            {% if doc.doc_category == 'solicitation' %}
+                                <span class="badge bg-success">Solicitation</span>
                             {% elif doc.doc_category == 'budget_template' %}
                                 <span class="badge bg-teal text-white" style="background-color:#20c997!important;">Budget</span>
                             {% elif doc.doc_category == 'application_form' %}

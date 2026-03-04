@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS checkpoint_state MEDIUMTEXT DEFAULT NULL",
             "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0",
             "ALTER TABLE opportunity_documents ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'grants_gov'",
+            "UPDATE opportunity_documents SET doc_category = 'solicitation' WHERE doc_category IN ('rfp_rfa', 'nofo')",
         ]:
             try:
                 await conn.execute(sa_text(ddl))

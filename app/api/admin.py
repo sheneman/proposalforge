@@ -942,6 +942,37 @@ async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_d
     })
 
 
+@router.post("/doc-sync/reclassify", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def reclassify_all_documents(request: Request, db: AsyncSession = Depends(get_db)):
+    """Reset classification on all downloaded documents so they get re-classified."""
+    from app.services.document_service import document_service
+    if document_service.is_processing:
+        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot reclassify while processing is in progress.</div>")
+
+    result = await db.execute(
+        text("""UPDATE opportunity_documents
+                SET classify_status = 'pending',
+                    doc_category = NULL,
+                    error_message = NULL
+                WHERE download_status = 'downloaded'
+                  AND ocr_status IN ('completed', 'skipped')""")
+    )
+    count = result.rowcount
+    await db.commit()
+
+    status = await document_service.get_processing_status()
+    counts = await document_service.get_document_counts()
+    tz = await settings_service.get_timezone(db)
+    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
+        "request": request,
+        "is_processing": False,
+        "stats": {**status["stats"], "reclassify_reset": count},
+        "counts": counts,
+        "is_admin": _is_admin(request),
+        "tz": tz,
+    })
+
+
 @router.post("/doc-sync/extract-links", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def extract_linked_documents(request: Request, db: AsyncSession = Depends(get_db)):
     """Batch extract linked documents from descriptions for opportunities without Grants.gov docs."""
@@ -952,6 +983,18 @@ async def extract_linked_documents(request: Request, db: AsyncSession = Depends(
 
     asyncio.create_task(document_service.batch_extract_linked_documents())
     return HTMLResponse("<div class='alert alert-success py-2'><i class='bi bi-link-45deg'></i> Link extraction started in background. Refresh status to monitor progress.</div>")
+
+
+@router.post("/doc-sync/web-search", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def web_search_solicitations(request: Request, db: AsyncSession = Depends(get_db)):
+    """Search the web for solicitation PDFs for opportunities missing them."""
+    import asyncio
+    from app.services.document_service import document_service
+    if document_service.is_processing:
+        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot run web search while document processing is in progress.</div>")
+
+    asyncio.create_task(document_service.search_for_solicitations())
+    return HTMLResponse("<div class='alert alert-success py-2'><i class='bi bi-search'></i> Web search started in background. Refresh status to monitor progress.</div>")
 
 
 @router.get("/doc-sync/errors", response_class=HTMLResponse)

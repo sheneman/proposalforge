@@ -12,7 +12,7 @@
 {% set total = stats.get("total", 0) %}
 {% set phase = stats.get("phase", "starting") %}
 
-{% if phase == "extracting links" %}
+{% if phase in ("extracting links", "web search", "creating synopsis docs") %}
     {% set scanned = stats.get("scanned", 0) %}
     {% set downloaded = stats.get("downloaded", 0) %}
     {% set errors = stats.get("errors", 0) %}
@@ -170,6 +170,20 @@
             hx-swap="innerHTML"
             hx-confirm="Scan all open opportunities without documents and fetch linked content from their descriptions?">
         <i class="bi bi-link-45deg"></i> Extract Links
+    </button>
+    <button class="btn btn-outline-secondary btn-sm"
+            hx-post="/admin/doc-sync/reclassify"
+            hx-target="#doc-sync-status"
+            hx-swap="innerHTML"
+            hx-confirm="Re-classify all documents? This will re-run classification on all processed documents using improved heuristics.">
+        <i class="bi bi-tags"></i> Reclassify All
+    </button>
+    <button class="btn btn-outline-success btn-sm"
+            hx-post="/admin/doc-sync/web-search"
+            hx-target="#doc-sync-status"
+            hx-swap="innerHTML"
+            hx-confirm="Search the web for solicitation PDFs for opportunities that don't have one? This uses the Brave Search API.">
+        <i class="bi bi-search"></i> Web Search
     </button>
     <button class="btn btn-outline-warning btn-sm"
             hx-post="/admin/doc-sync/reset"

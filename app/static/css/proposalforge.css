@@ -358,6 +358,7 @@ footer a:hover {
     flex-wrap: nowrap;
     overflow-x: auto;
     padding: 0.5rem 0;
+    min-width: 0;
 }
 
 .pipeline-stage-box {
@@ -365,9 +366,10 @@ footer a:hover {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-width: 100px;
-    width: 110px;
-    padding: 0.75rem 0.5rem;
+    min-width: 68px;
+    width: 68px;
+    flex-shrink: 0;
+    padding: 0.5rem 0.25rem;
     border-radius: 0.5rem;
     border: 2px solid #dee2e6;
     background: #fff;
@@ -377,12 +379,12 @@ footer a:hover {
 }
 
 .pipeline-stage-box .stage-icon {
-    font-size: 1.4rem;
-    margin-bottom: 0.25rem;
+    font-size: 1.2rem;
+    margin-bottom: 0.15rem;
 }
 
 .pipeline-stage-box .stage-label {
-    font-size: 0.7rem;
+    font-size: 0.6rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
@@ -390,14 +392,14 @@ footer a:hover {
 }
 
 .pipeline-stage-box .stage-count {
-    font-size: 1.1rem;
+    font-size: 0.9rem;
     font-weight: 700;
     line-height: 1.2;
-    margin-top: 0.15rem;
+    margin-top: 0.1rem;
 }
 
 .pipeline-stage-box .stage-count-label {
-    font-size: 0.65rem;
+    font-size: 0.55rem;
     color: #6c757d;
 }
 
@@ -490,8 +492,8 @@ footer a:hover {
 .pipeline-arrow {
     display: flex;
     align-items: center;
-    padding: 0 0.25rem;
-    font-size: 1.1rem;
+    padding: 0 0.15rem;
+    font-size: 0.75rem;
     color: #dee2e6;
     flex-shrink: 0;
 }
@@ -548,13 +550,14 @@ footer a:hover {
 }
 
 /* Responsive: shrink on small screens */
-@media (max-width: 768px) {
+@media (max-width: 576px) {
     .pipeline-stage-box {
-        min-width: 70px;
-        width: 80px;
-        padding: 0.5rem 0.25rem;
+        min-width: 55px;
+        width: 55px;
+        padding: 0.35rem 0.15rem;
     }
-    .pipeline-stage-box .stage-icon { font-size: 1.1rem; }
-    .pipeline-stage-box .stage-count { font-size: 0.9rem; }
-    .pipeline-stage-box .stage-label { font-size: 0.6rem; }
+    .pipeline-stage-box .stage-icon { font-size: 1rem; }
+    .pipeline-stage-box .stage-count { font-size: 0.75rem; }
+    .pipeline-stage-box .stage-label { font-size: 0.5rem; }
+    .pipeline-arrow { font-size: 0.6rem; padding: 0 0.1rem; }
 }

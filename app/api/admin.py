@@ -161,7 +161,7 @@ async def sync_live(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/sync/trigger", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
-async def trigger_sync(request: Request, full: bool = False, refresh: bool = False):
+async def trigger_sync(request: Request, full: bool = False, refresh: bool = False, db: AsyncSession = Depends(get_db)):
     if not sync_service.is_syncing:
         if refresh:
             asyncio.create_task(sync_service.full_sync(skip_discovery=True))
@@ -171,17 +171,19 @@ async def trigger_sync(request: Request, full: bool = False, refresh: bool = Fal
             asyncio.create_task(sync_service.incremental_sync())
 
     await asyncio.sleep(0.2)
-    return await sync_live(request)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
-async def cancel_sync(request: Request):
+async def cancel_sync(request: Request, db: AsyncSession = Depends(get_db)):
     cancelled = sync_service.cancel_sync()
     await asyncio.sleep(0.5)
     if not cancelled:
         from app.services.cache_service import cache_service
         await cache_service.delete("pf:sync_stats")
-    return await sync_live(request)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 # ====================================================================
@@ -848,23 +850,255 @@ async def test_ocr_connection(request: Request, db: AsyncSession = Depends(get_d
 
 
 # ====================================================================
-# Document Processing Status & Trigger
+# Pipeline Workflow — Unified Status
+# ====================================================================
+
+async def _build_pipeline_context(request: Request, db: AsyncSession) -> dict:
+    """Build the template context for the unified pipeline visualization."""
+    from app.services.document_service import document_service
+
+    tz = await settings_service.get_timezone(db)
+
+    # --- Sync state ---
+    sync_active = sync_service.is_syncing
+    sync_stats = dict(sync_service.sync_stats) if sync_active else {}
+    if not sync_active:
+        shared = await sync_service.get_shared_stats()
+        if shared and shared.get("is_syncing"):
+            sync_active = True
+            sync_stats = shared.get("stats", {})
+
+    last_log = (await db.execute(
+        select(SyncLog).where(SyncLog.status == "completed")
+        .order_by(SyncLog.completed_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    last_sync = last_log.completed_at if last_log else sync_service.last_sync
+
+    # --- Doc processing state ---
+    doc_status = await document_service.get_processing_status()
+    doc_processing = doc_status["is_processing"]
+    doc_stats = doc_status.get("stats", {})
+    counts = await document_service.get_document_counts()
+    doc_phase = doc_stats.get("phase", "")
+
+    # --- Scheduler info ---
+    sched_enabled = scheduler.is_grants_enabled()
+    sched_interval = scheduler.get_grants_interval_hours()
+    next_run = scheduler.get_next_run_time("incremental_sync")
+
+    is_running = sync_active or doc_processing
+
+    # --- Build stages ---
+    total_docs = counts.get("total", 0)
+    downloaded = counts.get("downloaded", 0)
+    ocr_completed = counts.get("ocr_completed", 0)
+    classified = counts.get("classified", 0)
+    embedded = counts.get("embedded", 0)
+    errors = counts.get("errors", 0)
+    pending = counts.get("pending", 0)
+
+    # Sync count: use last log success count or total opportunities
+    sync_count = 0
+    if last_log and last_log.success_count:
+        sync_count = last_log.success_count
+    elif sync_stats.get("success"):
+        sync_count = sync_stats.get("success", 0)
+
+    def _stage_state(stage_id):
+        """Determine state for each pipeline stage."""
+        if stage_id == "sync":
+            if sync_active:
+                return "active"
+            if last_sync:
+                return "completed"
+            return "idle"
+
+        if stage_id == "download":
+            if doc_processing and doc_phase in ("extracting links", "web search", "creating synopsis docs", "processing"):
+                if downloaded < total_docs:
+                    return "active"
+            if total_docs > 0 and downloaded >= total_docs:
+                return "completed"
+            if total_docs > 0:
+                return "pending" if not doc_processing else "pending"
+            return "idle"
+
+        if stage_id == "ocr":
+            if doc_processing and doc_phase == "processing" and ocr_completed < total_docs:
+                return "active"
+            if total_docs > 0 and ocr_completed >= total_docs:
+                return "completed"
+            if total_docs > 0:
+                return "pending"
+            return "idle"
+
+        if stage_id == "classify":
+            if doc_processing and doc_phase == "processing" and classified < total_docs:
+                return "active"
+            if total_docs > 0 and classified >= total_docs:
+                return "completed"
+            if total_docs > 0:
+                return "pending"
+            return "idle"
+
+        if stage_id == "embed":
+            if doc_processing and doc_phase == "processing" and embedded < total_docs:
+                return "active"
+            if total_docs > 0 and embedded >= total_docs:
+                return "completed"
+            if total_docs > 0:
+                return "pending"
+            return "idle"
+
+        return "idle"
+
+    stages = [
+        {"id": "sync", "label": "Sync", "icon": "bi-cloud-download", "state": _stage_state("sync"),
+         "count": sync_count, "count_label": "synced"},
+        {"id": "download", "label": "Fetch", "icon": "bi-file-earmark-arrow-down", "state": _stage_state("download"),
+         "count": downloaded, "count_label": "fetched"},
+        {"id": "ocr", "label": "OCR", "icon": "bi-file-earmark-text", "state": _stage_state("ocr"),
+         "count": ocr_completed, "count_label": "extracted"},
+        {"id": "classify", "label": "Classify", "icon": "bi-tags", "state": _stage_state("classify"),
+         "count": classified, "count_label": "classified"},
+        {"id": "embed", "label": "Embed", "icon": "bi-vector-pen", "state": _stage_state("embed"),
+         "count": embedded, "count_label": "embedded"},
+    ]
+
+    # --- Progress percentage ---
+    progress_pct = None
+    if is_running:
+        if sync_active:
+            sync_phase = sync_stats.get("phase", "listing")
+            if sync_phase == "listing":
+                est = sync_stats.get("listing_estimated", 0)
+                fetched = sync_stats.get("listing_fetched", 0)
+                progress_pct = round(fetched / est * 100, 1) if est > 0 else 5
+            else:
+                total = sync_stats.get("total", 0)
+                success = sync_stats.get("success", 0)
+                errs = sync_stats.get("errors", 0)
+                skipped = sync_stats.get("skipped", 0)
+                processed = success + errs + skipped
+                progress_pct = round(processed / total * 100, 1) if total > 0 else 5
+        elif doc_processing:
+            if doc_phase in ("extracting links", "web search", "creating synopsis docs"):
+                scanned = doc_stats.get("scanned", 0)
+                dtotal = doc_stats.get("total", 0)
+                progress_pct = round(scanned / dtotal * 100, 1) if dtotal > 0 else 5
+            else:
+                dtotal = doc_stats.get("total", 0)
+                dl = doc_stats.get("downloaded", 0)
+                ocr = doc_stats.get("ocr_completed", 0)
+                cls = doc_stats.get("classified", 0)
+                emb = doc_stats.get("embedded", 0)
+                if dtotal > 0:
+                    progress_pct = round((dl + ocr + cls + emb) / (dtotal * 4) * 100, 1)
+                else:
+                    progress_pct = 5
+
+    # --- Active detail text ---
+    active_detail = ""
+    if sync_active:
+        sync_phase = sync_stats.get("phase", "listing")
+        if sync_phase == "listing":
+            active_detail = f"Discovering opportunities... {sync_stats.get('listing_fetched', 0):,} / {sync_stats.get('listing_estimated', 0):,} IDs"
+        else:
+            total = sync_stats.get("total", 0)
+            success = sync_stats.get("success", 0)
+            batch = sync_stats.get("current_batch", 0)
+            total_batches = sync_stats.get("total_batches", 0)
+            active_detail = f"Fetching details: {success:,}/{total:,} (batch {batch}/{total_batches})"
+    elif doc_processing:
+        if doc_phase in ("extracting links", "web search", "creating synopsis docs"):
+            scanned = doc_stats.get("scanned", 0)
+            dtotal = doc_stats.get("total", 0)
+            active_detail = f"{doc_phase.title()}: {scanned:,}/{dtotal:,} opportunities"
+        elif doc_phase == "processing":
+            dtotal = doc_stats.get("total", 0)
+            dl = doc_stats.get("downloaded", 0)
+            ocr = doc_stats.get("ocr_completed", 0)
+            cls = doc_stats.get("classified", 0)
+            emb = doc_stats.get("embedded", 0)
+            active_detail = f"Processing: {dl:,} DL / {ocr:,} OCR / {cls:,} classified / {emb:,} embedded of {dtotal:,}"
+        else:
+            active_detail = f"{doc_phase.title() if doc_phase else 'Starting'}..."
+
+    return {
+        "request": request,
+        "stages": stages,
+        "is_running": is_running,
+        "is_admin": _is_admin(request),
+        "tz": tz,
+        "scheduler_enabled": sched_enabled,
+        "scheduler_interval": sched_interval,
+        "next_run": next_run,
+        "progress_pct": progress_pct,
+        "active_detail": active_detail,
+        "error_count": errors,
+        "pending_count": pending,
+        "last_sync": last_sync,
+    }
+
+
+@router.get("/pipeline/status", response_class=HTMLResponse)
+async def pipeline_status(request: Request, db: AsyncSession = Depends(get_db)):
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
+
+
+@router.post("/pipeline/run", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def pipeline_run(request: Request, db: AsyncSession = Depends(get_db)):
+    """Run full pipeline: incremental sync then process documents."""
+    from app.services.document_service import document_service
+
+    if sync_service.is_syncing or document_service.is_processing:
+        ctx = await _build_pipeline_context(request, db)
+        return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
+
+    async def _run_pipeline():
+        await sync_service.incremental_sync()
+        await document_service.process_pending_documents()
+
+    asyncio.create_task(_run_pipeline())
+    await asyncio.sleep(0.3)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
+
+
+@router.post("/pipeline/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def pipeline_cancel(request: Request, db: AsyncSession = Depends(get_db)):
+    """Cancel whichever stage is currently running."""
+    from app.services.document_service import document_service
+
+    if sync_service.is_syncing:
+        sync_service.cancel_sync()
+    if document_service.is_processing:
+        document_service.cancel_processing()
+
+    await asyncio.sleep(0.5)
+
+    # Clear stale Redis state
+    from app.services.cache_service import cache_service
+    try:
+        await cache_service.delete("pf:sync_stats")
+        await cache_service.delete("pf:doc_processing")
+        await cache_service.delete("pf:doc_sync_stats")
+    except Exception:
+        pass
+
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
+
+
+# ====================================================================
+# Document Processing Status & Trigger (returns pipeline view)
 # ====================================================================
 
 @router.get("/doc-sync/status", response_class=HTMLResponse)
 async def doc_sync_status(request: Request, db: AsyncSession = Depends(get_db)):
-    from app.services.document_service import document_service
-    status = await document_service.get_processing_status()
-    counts = await document_service.get_document_counts()
-    tz = await settings_service.get_timezone(db)
-    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
-        "request": request,
-        "is_processing": status["is_processing"],
-        "stats": status["stats"],
-        "counts": counts,
-        "is_admin": _is_admin(request),
-        "tz": tz,
-    })
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/doc-sync/trigger", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -872,7 +1106,8 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
     from app.services.document_service import document_service
     status = await document_service.get_processing_status()
     if document_service.is_processing or status.get("is_processing"):
-        return HTMLResponse("<div class='alert alert-warning py-2'>Processing already in progress.</div>")
+        ctx = await _build_pipeline_context(request, db)
+        return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
     # Set processing flag + initial stats in Redis so ALL workers see it immediately
     from app.services.cache_service import cache_service
@@ -893,22 +1128,18 @@ async def trigger_doc_sync(request: Request, db: AsyncSession = Depends(get_db))
         pass
 
     asyncio.create_task(document_service.process_pending_documents())
-    tz = await settings_service.get_timezone(db)
-    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
-        "request": request,
-        "is_processing": True,
-        "stats": {"phase": "starting", "total": counts.get("pending", 0)},
-        "counts": counts,
-        "is_admin": _is_admin(request),
-        "tz": tz,
-    })
+    await asyncio.sleep(0.2)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/doc-sync/cancel", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def cancel_doc_sync(request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.document_service import document_service
     document_service.cancel_processing()
-    return HTMLResponse("<div class='alert alert-info py-2'>Cancellation requested...</div>")
+    await asyncio.sleep(0.5)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/doc-sync/reset", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -916,7 +1147,8 @@ async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_d
     """Reset all document statuses back to pending so they get reprocessed."""
     from app.services.document_service import document_service
     if document_service.is_processing:
-        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot reset while processing is in progress.</div>")
+        ctx = await _build_pipeline_context(request, db)
+        return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
     await db.execute(
         text("""UPDATE opportunity_documents
@@ -929,17 +1161,8 @@ async def reset_all_documents(request: Request, db: AsyncSession = Depends(get_d
     )
     await db.commit()
 
-    status = await document_service.get_processing_status()
-    counts = await document_service.get_document_counts()
-    tz = await settings_service.get_timezone(db)
-    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
-        "request": request,
-        "is_processing": False,
-        "stats": status["stats"],
-        "counts": counts,
-        "is_admin": _is_admin(request),
-        "tz": tz,
-    })
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/doc-sync/reclassify", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -947,9 +1170,10 @@ async def reclassify_all_documents(request: Request, db: AsyncSession = Depends(
     """Reset classification on all downloaded documents so they get re-classified."""
     from app.services.document_service import document_service
     if document_service.is_processing:
-        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot reclassify while processing is in progress.</div>")
+        ctx = await _build_pipeline_context(request, db)
+        return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
-    result = await db.execute(
+    await db.execute(
         text("""UPDATE opportunity_documents
                 SET classify_status = 'pending',
                     doc_category = NULL,
@@ -957,44 +1181,38 @@ async def reclassify_all_documents(request: Request, db: AsyncSession = Depends(
                 WHERE download_status = 'downloaded'
                   AND ocr_status IN ('completed', 'skipped')""")
     )
-    count = result.rowcount
     await db.commit()
 
-    status = await document_service.get_processing_status()
-    counts = await document_service.get_document_counts()
-    tz = await settings_service.get_timezone(db)
-    return templates.TemplateResponse("partials/admin/doc_sync_status.html", {
-        "request": request,
-        "is_processing": False,
-        "stats": {**status["stats"], "reclassify_reset": count},
-        "counts": counts,
-        "is_admin": _is_admin(request),
-        "tz": tz,
-    })
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/doc-sync/extract-links", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def extract_linked_documents(request: Request, db: AsyncSession = Depends(get_db)):
     """Batch extract linked documents from descriptions for opportunities without Grants.gov docs."""
-    import asyncio
     from app.services.document_service import document_service
     if document_service.is_processing:
-        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot extract links while document processing is in progress.</div>")
+        ctx = await _build_pipeline_context(request, db)
+        return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
     asyncio.create_task(document_service.batch_extract_linked_documents())
-    return HTMLResponse("<div class='alert alert-success py-2'><i class='bi bi-link-45deg'></i> Link extraction started in background. Refresh status to monitor progress.</div>")
+    await asyncio.sleep(0.3)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.post("/doc-sync/web-search", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def web_search_solicitations(request: Request, db: AsyncSession = Depends(get_db)):
     """Search the web for solicitation PDFs for opportunities missing them."""
-    import asyncio
     from app.services.document_service import document_service
     if document_service.is_processing:
-        return HTMLResponse("<div class='alert alert-warning py-2'>Cannot run web search while document processing is in progress.</div>")
+        ctx = await _build_pipeline_context(request, db)
+        return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
     asyncio.create_task(document_service.search_for_solicitations())
-    return HTMLResponse("<div class='alert alert-success py-2'><i class='bi bi-search'></i> Web search started in background. Refresh status to monitor progress.</div>")
+    await asyncio.sleep(0.3)
+    ctx = await _build_pipeline_context(request, db)
+    return templates.TemplateResponse("partials/admin/pipeline_status.html", ctx)
 
 
 @router.get("/doc-sync/errors", response_class=HTMLResponse)

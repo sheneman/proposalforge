@@ -341,3 +341,220 @@ footer a:hover {
     max-height: calc(100vh - 200px);
     overflow-y: auto;
 }
+
+/* ============================================================
+   Pipeline Workflow Visualization
+   ============================================================ */
+
+.pipeline-wrapper {
+    padding: 0.75rem 0;
+}
+
+.pipeline-stages {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 0.5rem 0;
+}
+
+.pipeline-stage-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 100px;
+    width: 110px;
+    padding: 0.75rem 0.5rem;
+    border-radius: 0.5rem;
+    border: 2px solid #dee2e6;
+    background: #fff;
+    position: relative;
+    transition: border-color 0.3s, box-shadow 0.3s, opacity 0.3s;
+    text-align: center;
+}
+
+.pipeline-stage-box .stage-icon {
+    font-size: 1.4rem;
+    margin-bottom: 0.25rem;
+}
+
+.pipeline-stage-box .stage-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #495057;
+}
+
+.pipeline-stage-box .stage-count {
+    font-size: 1.1rem;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-top: 0.15rem;
+}
+
+.pipeline-stage-box .stage-count-label {
+    font-size: 0.65rem;
+    color: #6c757d;
+}
+
+/* State: completed */
+.pipeline-stage-box.state-completed {
+    border-color: #198754;
+    background: #f0fdf4;
+}
+
+.pipeline-stage-box.state-completed .stage-icon {
+    color: #198754;
+}
+
+.pipeline-stage-box.state-completed .stage-count {
+    color: #198754;
+}
+
+/* State: active */
+.pipeline-stage-box.state-active {
+    border-color: var(--gold);
+    box-shadow: 0 0 0 3px rgba(212, 168, 67, 0.25);
+    animation: pipeline-pulse 2s ease-in-out infinite;
+}
+
+.pipeline-stage-box.state-active .stage-icon {
+    color: var(--gold);
+}
+
+.pipeline-stage-box.state-active .stage-count {
+    color: var(--navy);
+}
+
+/* State: pending */
+.pipeline-stage-box.state-pending {
+    border-color: #dee2e6;
+    opacity: 0.5;
+}
+
+.pipeline-stage-box.state-pending .stage-icon {
+    color: #adb5bd;
+}
+
+/* State: error */
+.pipeline-stage-box.state-error {
+    border-color: #dc3545;
+    background: #fff5f5;
+}
+
+.pipeline-stage-box.state-error .stage-icon {
+    color: #dc3545;
+}
+
+/* State: idle (no data yet) */
+.pipeline-stage-box.state-idle {
+    border-color: #dee2e6;
+    opacity: 0.7;
+}
+
+/* Badge overlays */
+.pipeline-stage-box .stage-badge {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    border: 2px solid #fff;
+}
+
+.stage-badge-completed {
+    background: #198754;
+    color: #fff;
+}
+
+.stage-badge-active {
+    background: var(--gold);
+    color: var(--navy);
+}
+
+.stage-badge-error {
+    background: #dc3545;
+    color: #fff;
+}
+
+/* Arrows between stages */
+.pipeline-arrow {
+    display: flex;
+    align-items: center;
+    padding: 0 0.25rem;
+    font-size: 1.1rem;
+    color: #dee2e6;
+    flex-shrink: 0;
+}
+
+.pipeline-arrow.arrow-completed {
+    color: #198754;
+}
+
+.pipeline-arrow.arrow-active {
+    color: var(--gold);
+    animation: arrow-flow 1.5s ease-in-out infinite;
+}
+
+/* Progress bar */
+.pipeline-progress {
+    height: 6px;
+    border-radius: 3px;
+    background: #e9ecef;
+    overflow: hidden;
+    margin-top: 0.75rem;
+}
+
+.pipeline-progress-bar {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #198754, var(--gold));
+    transition: width 0.5s ease;
+}
+
+/* Detail text */
+.pipeline-detail {
+    font-size: 0.8rem;
+    color: #6c757d;
+    margin-top: 0.5rem;
+    min-height: 1.2em;
+}
+
+/* Scheduler info line */
+.pipeline-scheduler-info {
+    font-size: 0.75rem;
+    color: #6c757d;
+    margin-bottom: 0.5rem;
+}
+
+/* Animations */
+@keyframes pipeline-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(212, 168, 67, 0.25); }
+    50% { box-shadow: 0 0 0 6px rgba(212, 168, 67, 0.15); }
+}
+
+@keyframes arrow-flow {
+    0%, 100% { opacity: 1; transform: translateX(0); }
+    50% { opacity: 0.5; transform: translateX(3px); }
+}
+
+/* Responsive: shrink on small screens */
+@media (max-width: 768px) {
+    .pipeline-stage-box {
+        min-width: 70px;
+        width: 80px;
+        padding: 0.5rem 0.25rem;
+    }
+    .pipeline-stage-box .stage-icon { font-size: 1.1rem; }
+    .pipeline-stage-box .stage-count { font-size: 0.9rem; }
+    .pipeline-stage-box .stage-label { font-size: 0.6rem; }
+}

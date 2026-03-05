@@ -1,0 +1,181 @@
+{# Pipeline Workflow Visualization - Grants.gov Processing #}
+<div class="pipeline-wrapper">
+
+    {# Scheduler info line #}
+    <div class="pipeline-scheduler-info d-flex justify-content-between align-items-center">
+        <span>
+            {% if scheduler_enabled %}
+            <i class="bi bi-clock text-success"></i> Auto-sync every {{ scheduler_interval }}h
+            {% if next_run %}
+            &middot; Next: {{ next_run | tz(tz) }}
+            {% endif %}
+            {% else %}
+            <i class="bi bi-clock text-muted"></i> Auto-sync disabled
+            {% endif %}
+        </span>
+        {% if is_running %}
+        <span class="badge bg-primary">
+            <span class="spinner-border spinner-border-sm" style="width: 0.65rem; height: 0.65rem;" role="status"></span>
+            Running
+        </span>
+        {% endif %}
+    </div>
+
+    {# Stage boxes with arrows #}
+    <div class="pipeline-stages">
+        {% for stage in stages %}
+            {# Arrow before each stage (except first) #}
+            {% if not loop.first %}
+            {% set prev = stages[loop.index0 - 1] %}
+            <div class="pipeline-arrow {% if prev.state == 'completed' and stage.state == 'completed' %}arrow-completed{% elif prev.state == 'completed' and stage.state == 'active' %}arrow-active{% elif stage.state == 'active' %}arrow-active{% endif %}">
+                <i class="bi bi-chevron-right"></i>
+            </div>
+            {% endif %}
+
+            <div class="pipeline-stage-box state-{{ stage.state }}">
+                {# Badge overlay #}
+                {% if stage.state == 'completed' %}
+                <div class="stage-badge stage-badge-completed"><i class="bi bi-check"></i></div>
+                {% elif stage.state == 'active' %}
+                <div class="stage-badge stage-badge-active">
+                    <span class="spinner-border spinner-border-sm" style="width: 0.6rem; height: 0.6rem;" role="status"></span>
+                </div>
+                {% elif stage.state == 'error' %}
+                <div class="stage-badge stage-badge-error"><i class="bi bi-exclamation"></i></div>
+                {% endif %}
+
+                <div class="stage-icon"><i class="bi {{ stage.icon }}"></i></div>
+                <div class="stage-label">{{ stage.label }}</div>
+                <div class="stage-count">{{ "{:,}".format(stage.count) }}</div>
+                <div class="stage-count-label">{{ stage.count_label }}</div>
+            </div>
+        {% endfor %}
+    </div>
+
+    {# Progress bar (only when running) #}
+    {% if is_running and progress_pct is not none %}
+    <div class="pipeline-progress">
+        <div class="pipeline-progress-bar" style="width: {{ progress_pct }}%"></div>
+    </div>
+    {% endif %}
+
+    {# Detail text line #}
+    <div class="pipeline-detail text-center">
+        {% if is_running %}
+            {% if active_detail %}
+                {{ active_detail }}
+            {% else %}
+                Processing...
+            {% endif %}
+        {% elif error_count and error_count > 0 %}
+            <span class="text-danger"><i class="bi bi-exclamation-triangle"></i> {{ "{:,}".format(error_count) }} error(s)</span>
+            {% if pending_count and pending_count > 0 %}
+            &middot; <span class="text-warning">{{ "{:,}".format(pending_count) }} pending</span>
+            {% endif %}
+        {% elif pending_count and pending_count > 0 %}
+            <span class="text-warning">{{ "{:,}".format(pending_count) }} documents pending processing</span>
+        {% elif last_sync %}
+            <span class="text-muted"><i class="bi bi-check-circle text-success"></i> Last sync: {{ last_sync | tz(tz) }}</span>
+        {% else %}
+            <span class="text-muted">No sync has been run yet</span>
+        {% endif %}
+    </div>
+
+    {# Action buttons #}
+    {% if is_admin %}
+    <div class="d-flex justify-content-center align-items-center gap-2 mt-3">
+        {% if is_running %}
+        <button class="btn btn-danger btn-sm"
+                hx-post="/admin/pipeline/cancel"
+                hx-target="#grants-pipeline"
+                hx-swap="innerHTML">
+            <i class="bi bi-stop-circle"></i> Cancel
+        </button>
+        {% else %}
+        <button class="btn btn-gold btn-sm"
+                hx-post="/admin/pipeline/run"
+                hx-target="#grants-pipeline"
+                hx-swap="innerHTML">
+            <i class="bi bi-play-fill"></i> Run Pipeline
+        </button>
+        {% endif %}
+
+        {# Advanced dropdown #}
+        <div class="dropdown">
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button"
+                    data-bs-toggle="dropdown" aria-expanded="false"
+                    {% if is_running %}disabled{% endif %}>
+                <i class="bi bi-gear"></i> Advanced
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+                <li>
+                    <button class="dropdown-item"
+                            hx-post="/admin/sync/trigger?full=true"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML"
+                            hx-confirm="Run a full sync from Grants.gov? This may take a while.">
+                        <i class="bi bi-arrow-repeat"></i> Full Sync
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item"
+                            hx-post="/admin/sync/trigger?full=false"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML">
+                        <i class="bi bi-arrow-clockwise"></i> Incremental Sync Only
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item"
+                            hx-post="/admin/doc-sync/trigger"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML">
+                        <i class="bi bi-file-earmark-arrow-down"></i> Process Docs Only
+                    </button>
+                </li>
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                    <button class="dropdown-item"
+                            hx-post="/admin/doc-sync/extract-links"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML"
+                            hx-confirm="Scan all open opportunities without documents and extract linked content?">
+                        <i class="bi bi-link-45deg"></i> Extract Links
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item"
+                            hx-post="/admin/doc-sync/web-search"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML"
+                            hx-confirm="Search the web for solicitation PDFs? This uses the Brave Search API.">
+                        <i class="bi bi-search"></i> Web Search
+                    </button>
+                </li>
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                    <button class="dropdown-item"
+                            hx-post="/admin/doc-sync/reclassify"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML"
+                            hx-confirm="Re-classify all documents? This will re-run classification using improved heuristics.">
+                        <i class="bi bi-tags"></i> Reclassify All
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item text-warning"
+                            hx-post="/admin/doc-sync/reset"
+                            hx-target="#grants-pipeline"
+                            hx-swap="innerHTML"
+                            hx-confirm="Reset all documents to pending? This will re-process all downloaded documents.">
+                        <i class="bi bi-arrow-counterclockwise"></i> Reset All
+                    </button>
+                </li>
+            </ul>
+        </div>
+    </div>
+    {% else %}
+    <div class="text-center text-muted small mt-2"><i class="bi bi-lock"></i> Log in to manage pipeline</div>
+    {% endif %}
+
+</div>

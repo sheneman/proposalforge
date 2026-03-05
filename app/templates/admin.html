@@ -24,26 +24,14 @@
                         <i class="bi bi-building"></i> Grants.gov
                     </div>
                     <div class="card-body">
-                        <!-- Sync status -->
-                        <div id="sync-live"
-                             hx-get="/admin/sync/live"
-                             hx-trigger="load, every 2s"
-                             hx-swap="innerHTML">
-                            <div class="text-center py-3">
-                                <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-                                <span class="text-muted ms-2">Loading...</span>
-                            </div>
-                        </div>
-                        <hr>
-                        <!-- Document Processing -->
-                        <h6 class="text-muted mb-2"><i class="bi bi-file-earmark-pdf"></i> Document Processing</h6>
-                        <div id="doc-sync-status"
-                             hx-get="/admin/doc-sync/status"
+                        <!-- Pipeline Workflow -->
+                        <div id="grants-pipeline"
+                             hx-get="/admin/pipeline/status"
                              hx-trigger="load, every 3s"
                              hx-swap="innerHTML">
                             <div class="text-center py-3">
                                 <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
-                                <span class="text-muted ms-2">Loading...</span>
+                                <span class="text-muted ms-2">Loading pipeline...</span>
                             </div>
                         </div>
                         <hr>

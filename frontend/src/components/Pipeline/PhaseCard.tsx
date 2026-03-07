@@ -45,7 +45,7 @@ export default function PhaseCard({ phase }: Props) {
         </span>
       )}
       <div className="mb-1">
-        <i className={`bi ${icon}`} style={{ fontSize: '1.5rem' }}></i>
+        <i className={`bi ${icon}${phase.status === 'running' ? ' phase-icon-pulse text-warning' : ''}`} style={{ fontSize: '1.5rem' }}></i>
       </div>
       <div className="fw-semibold small">{phase.name}</div>
       {(phase.status !== 'idle' && phase.status !== 'pending') && (

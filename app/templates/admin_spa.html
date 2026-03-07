@@ -32,7 +32,7 @@
             50% { transform: scale(1.15); opacity: 0.8; }
         }
 
-        /* Shimmer overlay on running card */
+        /* Shimmer overlay on running card — contained without overflow:hidden */
         .pipeline-phase-card.pipeline-active-border::after {
             content: '';
             position: absolute;
@@ -41,6 +41,7 @@
             animation: shimmer 2s ease-in-out infinite;
             border-radius: inherit;
             pointer-events: none;
+            clip-path: inset(0 round 0.5rem);
         }
         @keyframes shimmer {
             0% { left: -100%; }
@@ -50,7 +51,6 @@
         /* Subtle background highlight for running card */
         .pipeline-phase-card.pipeline-active-border {
             background: linear-gradient(135deg, rgba(212,168,67,0.05), rgba(212,168,67,0.12));
-            overflow: hidden;
         }
     </style>
 </head>

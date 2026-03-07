@@ -46,6 +46,10 @@ class PipelineService:
         try:
             shared = await cache_service.get(REDIS_PIPELINE_KEY)
             if shared:
+                # If Redis says running but this worker isn't running anything,
+                # it's stale from a previous container — don't lie to the UI
+                if shared.get("is_running") and not self.is_running:
+                    shared["_possibly_stale"] = True
                 return shared
         except Exception:
             pass
@@ -72,16 +76,29 @@ class PipelineService:
         self._task = asyncio.create_task(self._run(types))
 
     async def cancel(self):
-        if not self.is_running:
-            return
-        self._cancel_requested = True
-        # Also cancel the underlying services
-        from app.services.sync_service import sync_service
-        from app.services.document_service import document_service
-        sync_service.cancel_sync()
-        document_service._cancel_requested = True
-        if self._task and not self._task.done():
-            self._task.cancel()
+        if self.is_running:
+            self._cancel_requested = True
+            # Also cancel the underlying services
+            from app.services.sync_service import sync_service
+            from app.services.document_service import document_service
+            sync_service.cancel_sync()
+            document_service._cancel_requested = True
+            if self._task and not self._task.done():
+                self._task.cancel()
+        else:
+            # Nothing running on this worker — clear stale Redis state
+            try:
+                shared = await cache_service.get(REDIS_PIPELINE_KEY)
+                if shared and shared.get("is_running"):
+                    shared["is_running"] = False
+                    shared["current_phase"] = None
+                    for p in shared.get("phases", []):
+                        if p.get("status") == "running":
+                            p["status"] = "failed"
+                            p["detail"] = "Interrupted (server restart)"
+                    await cache_service.set(REDIS_PIPELINE_KEY, shared, REDIS_PIPELINE_TTL)
+            except Exception:
+                pass
 
     def _phase(self, idx: int) -> dict:
         return self.state["phases"][idx]

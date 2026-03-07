@@ -375,6 +375,10 @@ class SyncService:
                     continue
                 if detail_result is not None:
                     await self._upsert_detail(detail_result)
+                    # Update progress per-item so the UI stays responsive
+                    self.sync_stats["success"] = self.sync_stats.get("success", 0)
+                    if (self.sync_stats["success"] + self.sync_stats.get("skipped", 0)) % 10 == 0:
+                        await self._publish_stats()
 
             logger.info(f"Synced batch {i // batch_size + 1}/{total_batches}, progress: {min(i + batch_size, len(items))}/{len(items)}")
             await self._publish_stats()

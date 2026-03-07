@@ -41,5 +41,8 @@ alembic/__pycache__/
 htmlcov/
 .coverage
 
+# React build output
+app/static/react/
+
 # Local docs
 INTEGRATION_GUIDE.md

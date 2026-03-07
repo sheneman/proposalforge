@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -50,10 +51,41 @@ def require_admin(request: Request):
         raise HTTPException(status_code=403, detail="Admin authentication required")
 
 
-# --- Main dashboard ---
+# --- Main dashboard (React SPA) ---
+
+def _get_react_manifest() -> dict | None:
+    """Read Vite manifest.json for hashed asset filenames."""
+    import json
+    manifest_path = os.path.join("app", "static", "react", ".vite", "manifest.json")
+    try:
+        with open(manifest_path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
 
 @router.get("", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
+    manifest = _get_react_manifest()
+    js_file = ""
+    css_file = ""
+    if manifest:
+        entry = manifest.get("src/main.tsx", {})
+        js_file = entry.get("file", "")
+        css_files = entry.get("css", [])
+        css_file = css_files[0] if css_files else ""
+
+    return templates.TemplateResponse("admin_spa.html", {
+        "request": request,
+        "is_admin": _is_admin(request),
+        "debug": settings.DEBUG,
+        "js_file": js_file,
+        "css_file": css_file,
+    })
+
+
+@router.get("/legacy", response_class=HTMLResponse)
+async def admin_dashboard_legacy(request: Request):
     return templates.TemplateResponse("admin.html", {
         "request": request,
         "is_admin": _is_admin(request),

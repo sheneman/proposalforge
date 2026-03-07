@@ -160,12 +160,14 @@ from app.api.analytics import router as analytics_router
 from app.api.researchers import router as researchers_router
 from app.api.matches import router as matches_router
 from app.api.agents import router as agents_router
+from app.api.admin_api import router as admin_api_router
 
 app.include_router(pages_router)
 app.include_router(search_router)
 app.include_router(opportunities_router)
 app.include_router(sync_router)
 app.include_router(admin_router)
+app.include_router(admin_api_router)
 app.include_router(analytics_router)
 app.include_router(researchers_router)
 app.include_router(matches_router)

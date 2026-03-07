@@ -686,11 +686,10 @@ class DocumentService:
                 stmt = (
                     select(Opportunity)
                     .where(
-                        Opportunity.status != "archived",
+                        Opportunity.status.notin_(["archived", "closed"]),
                         or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
                         ~Opportunity.id.in_(has_sol),
                     )
-                    .limit(200)  # Process in manageable batches
                 )
                 result = await session.execute(stmt)
                 opps = result.scalars().all()
@@ -755,12 +754,17 @@ class DocumentService:
         if not title and not opp_number:
             return 0
 
-        # Build search query
+        # Build search query — keep it short to avoid Brave 422 errors
         query_parts = []
         if opp_number:
             query_parts.append(f'"{opp_number}"')
-        if title and len(title) < 120:
-            query_parts.append(f'"{title}"')
+        if title:
+            # Strip parenthetical suffixes like (R21), (R01) and truncate
+            clean_title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+            if len(clean_title) > 80:
+                clean_title = clean_title[:80].rsplit(' ', 1)[0]
+            if clean_title:
+                query_parts.append(f'"{clean_title}"')
         query_parts.append("filetype:pdf")
 
         # Add agency domain hint if available
@@ -771,6 +775,9 @@ class DocumentService:
                 break
 
         query = " ".join(query_parts)
+        # Cap total query length to avoid Brave API rejections
+        if len(query) > 300:
+            query = query[:300].rsplit(' ', 1)[0]
 
         # Call Brave Search API
         try:

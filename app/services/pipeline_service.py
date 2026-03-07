@@ -387,7 +387,7 @@ class PipelineService:
                         stmt = (
                             select(Opportunity)
                             .where(
-                                Opportunity.status != "archived",
+                                Opportunity.status.notin_(["archived", "closed"]),
                                 or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
                                 ~Opportunity.id.in_(has_sol),
                             )

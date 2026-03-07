@@ -689,7 +689,7 @@ class PipelineService:
 
         embedded = 0
         errors = 0
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(2)  # Low concurrency to avoid DB deadlocks
 
         async def _embed_one(doc_ref):
             nonlocal embedded, errors
@@ -698,30 +698,38 @@ class PipelineService:
             async with semaphore:
                 if self._cancel_requested:
                     return
-                try:
-                    async with async_session() as sess:
-                        from sqlalchemy import select as sel
-                        doc = (await sess.execute(
-                            sel(OpportunityDocument).where(OpportunityDocument.id == doc_ref.id)
-                        )).scalar_one_or_none()
-                        if not doc or doc.doc_category != "solicitation":
-                            return
-                        if doc.embed_status not in ("pending", "failed"):
-                            return
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        async with async_session() as sess:
+                            from sqlalchemy import select as sel
+                            doc = (await sess.execute(
+                                sel(OpportunityDocument).where(OpportunityDocument.id == doc_ref.id)
+                            )).scalar_one_or_none()
+                            if not doc or doc.doc_category != "solicitation":
+                                return
+                            if doc.embed_status not in ("pending", "failed"):
+                                return
 
-                        await document_service._embed_document(
-                            doc, embed_settings, ocr_settings, sess,
-                            embed_client=embed_client,
-                            chroma_collection=chroma_collection,
-                        )
-                        await sess.commit()
-                        if doc.embed_status == "completed":
-                            embedded += 1
-                        else:
-                            errors += 1
-                except Exception as e:
-                    logger.error(f"Embed error for doc {doc_ref.id}: {e}")
-                    errors += 1
+                            await document_service._embed_document(
+                                doc, embed_settings, ocr_settings, sess,
+                                embed_client=embed_client,
+                                chroma_collection=chroma_collection,
+                            )
+                            await sess.commit()
+                            if doc.embed_status == "completed":
+                                embedded += 1
+                            else:
+                                errors += 1
+                            break  # Success, exit retry loop
+                    except Exception as e:
+                        if "Deadlock" in str(e) and attempt < max_retries - 1:
+                            logger.warning(f"Deadlock on doc {doc_ref.id}, retry {attempt + 1}/{max_retries}")
+                            await asyncio.sleep(1 + attempt)
+                            continue
+                        logger.error(f"Embed error for doc {doc_ref.id}: {e}")
+                        errors += 1
+                        break
                 phase["processed"] = embedded
                 phase["errors"] = errors
                 if embedded % 5 == 0:

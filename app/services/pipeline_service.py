@@ -319,7 +319,7 @@ class PipelineService:
 
         from app.services.document_service import document_service
 
-        # Use inline link extraction + synopsis doc creation
+        # --- Sub-phase 1: Link extraction ---
         document_service.is_processing = True
         document_service._cancel_requested = False
         document_service.processing_stats = {
@@ -328,19 +328,34 @@ class PipelineService:
             "phase": "extracting links",
         }
 
+        link_docs = 0
         try:
+            phase["detail"] = "Extracting links..."
+            await self._publish_state()
             await document_service._inline_link_extraction()
-            phase["processed"] = document_service.processing_stats.get("downloaded", 0)
-            phase["total"] = document_service.processing_stats.get("total", 0)
+            link_docs = document_service.processing_stats.get("downloaded", 0)
+            link_scanned = document_service.processing_stats.get("scanned", 0)
+            link_total = document_service.processing_stats.get("total", 0)
+            phase["processed"] = link_docs
+            phase["total"] = link_total
             phase["errors"] = document_service.processing_stats.get("errors", 0)
+            phase["detail"] = f"Extracting links: {link_scanned}/{link_total} scanned, {link_docs} docs found"
+            await self._publish_state()
         except Exception as e:
             logger.error(f"Phase 3 link extraction failed: {e}", exc_info=True)
             phase["errors"] += 1
         finally:
             document_service.is_processing = False
 
+        # --- Sub-phase 2: Synopsis doc creation ---
+        # (already called inside _inline_link_extraction, but report progress)
+        synopsis_created = document_service.processing_stats.get("downloaded", 0) - link_docs
+        if synopsis_created > 0:
+            phase["detail"] = f"Creating synopsis docs: {synopsis_created} created"
+            await self._publish_state()
+
+        # --- Sub-phase 3: Web search for solicitations ---
         if not self._cancel_requested:
-            # Web search for solicitations
             phase["detail"] = "Searching web for solicitations..."
             await self._publish_state()
             try:
@@ -351,7 +366,6 @@ class PipelineService:
                     "total": 0, "scanned": 0, "downloaded": 0, "errors": 0,
                     "phase": "web search",
                 }
-                # Call search_for_solicitations internals without chaining
                 from app.config import settings as app_settings
                 if app_settings.BRAVE_API_KEY:
                     from app.database import async_session
@@ -377,32 +391,43 @@ class PipelineService:
                                 or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
                                 ~Opportunity.id.in_(has_sol),
                             )
-                            .limit(200)
                         )
                         result = await session.execute(stmt)
-                        opps = result.scalars().all()
+                        all_opps = list(result.scalars().all())
 
-                        phase["detail"] = f"Web search: {len(opps)} opportunities"
+                        total_opps = len(all_opps)
+                        web_found = 0
+                        web_searched = 0
+                        phase["detail"] = f"Web search: 0/{total_opps} searched, 0 PDFs found"
                         await self._publish_state()
 
                         async with httpx.AsyncClient(
                             follow_redirects=True, timeout=30.0,
                             headers={"User-Agent": "ProposalForge/1.0"},
                         ) as client:
-                            for i, opp in enumerate(opps):
+                            # Process in batches of 500
+                            batch_size = 500
+                            for batch_start in range(0, total_opps, batch_size):
                                 if self._cancel_requested:
                                     break
-                                try:
-                                    found = await document_service._web_search_for_opportunity(opp, session, client)
-                                    if found > 0:
-                                        await session.commit()
-                                        phase["processed"] += found
-                                except Exception:
-                                    phase["errors"] += 1
-                                    await session.rollback()
-                                if i % 5 == 4:
-                                    await self._publish_state()
-                                await asyncio.sleep(1)
+                                batch = all_opps[batch_start:batch_start + batch_size]
+                                for i, opp in enumerate(batch):
+                                    if self._cancel_requested:
+                                        break
+                                    try:
+                                        found = await document_service._web_search_for_opportunity(opp, session, client)
+                                        if found > 0:
+                                            await session.commit()
+                                            web_found += found
+                                            phase["processed"] = link_docs + web_found
+                                    except Exception:
+                                        phase["errors"] += 1
+                                        await session.rollback()
+                                    web_searched += 1
+                                    if web_searched % 5 == 0:
+                                        phase["detail"] = f"Web search: {web_searched}/{total_opps} searched, {web_found} PDFs found"
+                                        await self._publish_state()
+                                    await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"Phase 3 web search failed: {e}", exc_info=True)
             finally:

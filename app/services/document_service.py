@@ -101,6 +101,53 @@ class DocumentService:
         "sba.gov", "www.sba.gov",
     }
 
+    # URL path patterns to skip entirely (noise pages)
+    _SKIP_URL_PATTERNS = re.compile(
+        r'/(contact|about|staff|careers|login|signup|faq|blog|news|press|privacy|terms|accessibility|sitemap|help)(/|$)',
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _score_url(url: str) -> int:
+        """Score a URL by how likely it is to be a useful document. Negative = skip."""
+        lower = url.lower()
+        path = lower.split("?")[0]  # ignore query string for scoring
+
+        # Filter out noise pages
+        if DocumentService._SKIP_URL_PATTERNS.search(path):
+            return -1
+
+        score = 0
+
+        # File extension bonuses
+        if path.endswith(".pdf"):
+            score += 50
+        elif path.endswith(".docx") or path.endswith(".doc"):
+            score += 40
+
+        # Solicitation keywords in path
+        sol_keywords = ("nofo", "rfp", "rfa", "foa", "solicitation", "baa", "announcement")
+        for kw in sol_keywords:
+            if kw in path:
+                score += 30
+                break
+
+        # Document-related keywords
+        doc_keywords = ("download", "attachment", "file", "apply", "document")
+        for kw in doc_keywords:
+            if kw in path:
+                score += 15
+                break
+
+        # Penalize browse/search/listing pages
+        browse_keywords = ("browse", "search", "list", "archive", "index", "category")
+        for kw in browse_keywords:
+            if kw in path:
+                score -= 10
+                break
+
+        return score
+
     # Content types we can process
     _FETCHABLE_CONTENT_TYPES = {
         "application/pdf", "text/html",
@@ -158,6 +205,14 @@ class DocumentService:
 
         description = opp.synopsis_description or ""
         urls = self._extract_urls(description)
+        if not urls:
+            return 0
+
+        # Score, filter, sort, and limit URLs
+        scored = [(self._score_url(u), u) for u in urls]
+        scored = [(s, u) for s, u in scored if s >= 0]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        urls = [u for _, u in scored[:5]]
         if not urls:
             return 0
 
@@ -369,6 +424,7 @@ class DocumentService:
         """Scan open opportunities without docs and extract linked documents.
 
         Called inline during process_pending_documents (self.is_processing already True).
+        Only scans opportunities whose synopsis actually contains URLs (LIKE '%http%').
         """
         from app.models.opportunity import Opportunity
 
@@ -384,6 +440,7 @@ class DocumentService:
                     Opportunity.status != "archived",
                     or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
                     Opportunity.synopsis_description.isnot(None),
+                    Opportunity.synopsis_description.like("%http%"),
                     OpportunityDocument.id.is_(None),
                 )
             )
@@ -398,33 +455,43 @@ class DocumentService:
             self.processing_stats["scanned"] = 0
             self.processing_stats["downloaded"] = 0
             await self._publish_stats()
-            logger.info(f"Link extraction: scanning {len(opps)} opportunities")
+            logger.info(f"Link extraction: scanning {len(opps)} opportunities (with URLs)")
 
             total_created = 0
+            fetch_semaphore = asyncio.Semaphore(10)
+
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=30.0,
                 headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
             ) as client:
-                for i, opp in enumerate(opps):
+                batch_size = 100
+                for batch_start in range(0, len(opps), batch_size):
                     if self._cancel_requested:
                         break
-                    try:
-                        created = await self.extract_linked_documents(session, opp, client=client)
-                        if created > 0:
-                            await session.commit()
-                            total_created += created
-                            self.processing_stats["downloaded"] = total_created
-                    except Exception as e:
-                        logger.warning(f"Link extraction for {opp.opportunity_id}: {e}")
-                        self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
-                        await session.rollback()
+                    batch = opps[batch_start:batch_start + batch_size]
 
-                    self.processing_stats["scanned"] = i + 1
-                    if i % 5 == 4:
-                        await self._publish_stats()
-                    if i % 10 == 9:
-                        await asyncio.sleep(1)
+                    async def _process_opp(idx, opp):
+                        nonlocal total_created
+                        if self._cancel_requested:
+                            return
+                        async with fetch_semaphore:
+                            if self._cancel_requested:
+                                return
+                            try:
+                                created = await self.extract_linked_documents(session, opp, client=client)
+                                if created > 0:
+                                    await session.commit()
+                                    total_created += created
+                                    self.processing_stats["downloaded"] = total_created
+                            except Exception as e:
+                                logger.warning(f"Link extraction for {opp.opportunity_id}: {e}")
+                                self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
+                                await session.rollback()
+                            self.processing_stats["scanned"] = batch_start + idx + 1
+
+                    await asyncio.gather(*[_process_opp(i, opp) for i, opp in enumerate(batch)])
+                    await self._publish_stats()
 
             logger.info(f"Link extraction complete: {total_created} docs from {len(opps)} opportunities")
 
@@ -442,15 +509,13 @@ class DocumentService:
 
         async with async_session() as session:
             today = date.today()
-            # Find open opportunities with no documents but substantial descriptions
+            # Find open opportunities with no documents — include those with short descriptions too
             stmt = (
                 select(Opportunity)
                 .outerjoin(OpportunityDocument, OpportunityDocument.opportunity_id == Opportunity.id)
                 .where(
                     Opportunity.status != "archived",
                     or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
-                    Opportunity.synopsis_description.isnot(None),
-                    func.length(Opportunity.synopsis_description) > 500,
                     OpportunityDocument.id.is_(None),
                 )
             )
@@ -478,6 +543,30 @@ class DocumentService:
                     if existing:
                         continue
 
+                    synopsis = (opp.synopsis_description or "").strip()
+
+                    # If synopsis is too short or empty, build metadata-only synopsis
+                    if len(synopsis) <= 50:
+                        parts = []
+                        if opp.title:
+                            parts.append(f"Title: {opp.title}")
+                        if opp.opportunity_number:
+                            parts.append(f"Opportunity Number: {opp.opportunity_number}")
+                        if opp.agency_code:
+                            parts.append(f"Agency: {opp.agency_code}")
+                        if getattr(opp, "award_floor", None) or getattr(opp, "award_ceiling", None):
+                            floor = getattr(opp, "award_floor", None)
+                            ceiling = getattr(opp, "award_ceiling", None)
+                            if floor and ceiling:
+                                parts.append(f"Funding Range: ${floor:,.0f} - ${ceiling:,.0f}")
+                            elif ceiling:
+                                parts.append(f"Funding Up To: ${ceiling:,.0f}")
+                        if opp.close_date:
+                            parts.append(f"Close Date: {opp.close_date}")
+                        if not parts:
+                            continue  # Nothing useful to write
+                        synopsis = "\n".join(parts)
+
                     # Write synopsis text to disk
                     opp_dir = os.path.join(settings.DOCUMENT_STORAGE_PATH, str(opp.id))
                     os.makedirs(opp_dir, exist_ok=True)
@@ -485,17 +574,17 @@ class DocumentService:
                     text_path = dest_path + ".txt"  # Companion extracted text file
 
                     with open(dest_path, "w", encoding="utf-8") as f:
-                        f.write(opp.synopsis_description)
+                        f.write(synopsis)
                     # Write identical extracted text companion
                     with open(text_path, "w", encoding="utf-8") as f:
-                        f.write(opp.synopsis_description)
+                        f.write(synopsis)
 
                     doc = OpportunityDocument(
                         opportunity_id=opp.id,
                         attachment_id=att_id,
                         file_name="Synopsis Description.txt",
                         mime_type="text/plain",
-                        file_size=len(opp.synopsis_description.encode("utf-8")),
+                        file_size=len(synopsis.encode("utf-8")),
                         file_description="Opportunity synopsis description (auto-generated)",
                         folder_name="Synopsis",
                         source="synopsis",
@@ -504,7 +593,7 @@ class DocumentService:
                         ocr_status="completed",
                         classify_status="pending",
                         embed_status="pending",
-                        extracted_text_length=len(opp.synopsis_description),
+                        extracted_text_length=len(synopsis),
                     )
                     session.add(doc)
                     created += 1
@@ -659,7 +748,7 @@ class DocumentService:
         self, opp, session: AsyncSession, client: httpx.AsyncClient
     ) -> int:
         """Search the web for solicitation PDFs for a single opportunity."""
-        title = (opp.opportunity_title or "").strip()
+        title = (opp.title or "").strip()
         opp_number = (opp.opportunity_number or "").strip()
         agency_code = (opp.agency_code or "").upper()
 

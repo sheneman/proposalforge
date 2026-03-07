@@ -89,7 +89,35 @@ class PipelineService:
             p["status"] = "pending"
         await self._publish_state()
 
+        # Reset all document processing statuses so this run starts fresh
+        await self._reset_document_statuses()
+
         self._task = asyncio.create_task(self._run(types))
+
+    async def _reset_document_statuses(self):
+        """Reset all document statuses to pending so the pipeline processes everything."""
+        from app.database import async_session
+        from sqlalchemy import text
+
+        async with async_session() as session:
+            async with session.begin():
+                await session.execute(text(
+                    "UPDATE opportunity_documents SET download_status = 'pending' "
+                    "WHERE download_status NOT IN ('downloaded', 'skipped')"
+                ))
+                await session.execute(text(
+                    "UPDATE opportunity_documents SET ocr_status = 'pending' "
+                    "WHERE ocr_status NOT IN ('completed', 'skipped')"
+                ))
+                await session.execute(text(
+                    "UPDATE opportunity_documents SET classify_status = 'pending' "
+                    "WHERE classify_status NOT IN ('completed', 'skipped')"
+                ))
+                await session.execute(text(
+                    "UPDATE opportunity_documents SET embed_status = 'pending' "
+                    "WHERE embed_status NOT IN ('completed', 'skipped')"
+                ))
+        logger.info("Reset all pending/failed document statuses for fresh pipeline run")
 
     async def cancel(self):
         if self.is_running:

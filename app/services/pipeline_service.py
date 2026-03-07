@@ -152,7 +152,7 @@ class PipelineService:
 
         sync_service._publish_stats = _progress_hook
         try:
-            await sync_service.full_sync()
+            await sync_service.full_sync(opp_types=types)
         finally:
             sync_service._publish_stats = original_publish
 

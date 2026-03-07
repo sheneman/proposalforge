@@ -377,6 +377,7 @@ class SyncService:
                     await self._upsert_detail(detail_result)
 
             logger.info(f"Synced batch {i // batch_size + 1}/{total_batches}, progress: {min(i + batch_size, len(items))}/{len(items)}")
+            await self._publish_stats()
 
         await cache_service.invalidate_all()
         self.last_sync = datetime.utcnow()
@@ -384,7 +385,7 @@ class SyncService:
         logger.info(f"Sync completed: {self.sync_stats}")
         await self._finish_sync_log(log_id, "completed", self.sync_stats)
 
-    async def full_sync(self, skip_discovery: bool = False):
+    async def full_sync(self, skip_discovery: bool = False, opp_types: list[str] | None = None):
         if self.is_syncing:
             logger.warning("Sync already in progress")
             return
@@ -431,8 +432,11 @@ class SyncService:
                     self.sync_stats["listing_status"] = status
                     self.sync_stats["listing_fetched"] = fetched
                     self.sync_stats["listing_estimated"] = estimated
+                    # Schedule async publish so pipeline progress hook fires
+                    asyncio.ensure_future(self._publish_stats())
 
                 items = await self.client.fetch_all_opportunities(
+                    opp_statuses=opp_types,
                     progress_callback=_on_listing_progress,
                     cancel_check=lambda: self._cancel_requested,
                 )

@@ -6,6 +6,7 @@ const ICONS: Record<number, string> = {
   3: 'bi-link-45deg',
   4: 'bi-file-earmark-text',
   5: 'bi-tags',
+  6: 'bi-vector-pen',
 };
 
 const COUNT_LABELS: Record<number, string> = {
@@ -14,6 +15,7 @@ const COUNT_LABELS: Record<number, string> = {
   3: 'retrieved',
   4: 'extracted',
   5: 'classified',
+  6: 'embedded',
 };
 
 const STATUS_STYLES: Record<PhaseStatusValue, { border: string; badge: string; badgeIcon: string }> = {

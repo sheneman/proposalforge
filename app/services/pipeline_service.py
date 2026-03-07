@@ -18,6 +18,7 @@ def _empty_phases() -> list[dict]:
         {"phase": 3, "name": "Retrieve", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
         {"phase": 4, "name": "Extract", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
         {"phase": 5, "name": "Classify", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
+        {"phase": 6, "name": "Embed", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
     ]
 
 
@@ -100,6 +101,9 @@ class PipelineService:
             if self._cancel_requested:
                 return
             await self._phase_5_classify()
+            if self._cancel_requested:
+                return
+            await self._phase_6_embed()
         except asyncio.CancelledError:
             logger.info("Pipeline cancelled")
             for p in self.state["phases"]:
@@ -523,6 +527,132 @@ class PipelineService:
         phase["status"] = "failed" if self._cancel_requested else "completed"
         if self._cancel_requested:
             phase["detail"] = "Cancelled"
+        await self._publish_state()
+
+    async def _phase_6_embed(self):
+        """Phase 6: Embed solicitation documents (RFP/RFA/NOFO/FOA) into ChromaDB."""
+        phase = self._phase(5)
+        phase["status"] = "running"
+        self.state["current_phase"] = 6
+        await self._publish_state()
+
+        from app.database import async_session
+        from app.models.document import OpportunityDocument, DocumentChunk
+        from app.models.opportunity import Opportunity
+        from app.services.document_service import document_service
+        from app.services.settings_service import settings_service
+        from app.config import settings as app_settings
+        from sqlalchemy import select, or_
+        from datetime import date
+
+        async with async_session() as session:
+            embed_settings = await settings_service.get_embedding_settings(session)
+            ocr_settings = await settings_service.get_ocr_settings(session)
+
+        base_url = embed_settings.get("base_url", "")
+        model = embed_settings.get("model", "")
+        api_key = embed_settings.get("api_key", "")
+
+        if not base_url or not model:
+            phase["status"] = "completed"
+            phase["detail"] = "Embedding endpoint not configured, skipped"
+            await self._publish_state()
+            return
+
+        async with async_session() as session:
+            today = date.today()
+            # Only embed solicitation docs (RFP/RFA/NOFO/FOA) that have text and aren't yet embedded
+            stmt = (
+                select(OpportunityDocument)
+                .join(Opportunity, OpportunityDocument.opportunity_id == Opportunity.id)
+                .where(
+                    Opportunity.status != "archived",
+                    or_(Opportunity.close_date >= today, Opportunity.close_date.is_(None)),
+                    OpportunityDocument.ocr_status == "completed",
+                    OpportunityDocument.classify_status == "completed",
+                    OpportunityDocument.doc_category == "solicitation",
+                    OpportunityDocument.embed_status.in_(["pending", "failed"]),
+                )
+            )
+            result = await session.execute(stmt)
+            docs = list(result.scalars().all())
+
+        phase["total"] = len(docs)
+        phase["detail"] = f"{len(docs)} solicitation docs to embed"
+        await self._publish_state()
+
+        if not docs:
+            phase["status"] = "completed"
+            phase["detail"] = "No solicitation documents to embed"
+            await self._publish_state()
+            return
+
+        from openai import AsyncOpenAI
+        import chromadb
+
+        embed_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+
+        chroma_client = chromadb.HttpClient(
+            host=app_settings.CHROMADB_HOST,
+            port=app_settings.CHROMADB_PORT,
+        )
+        chroma_collection = chroma_client.get_or_create_collection(
+            name="opportunity_documents",
+            metadata={"hnsw:space": "cosine"},
+        )
+
+        embedded = 0
+        errors = 0
+        semaphore = asyncio.Semaphore(4)
+
+        async def _embed_one(doc_ref):
+            nonlocal embedded, errors
+            if self._cancel_requested:
+                return
+            async with semaphore:
+                if self._cancel_requested:
+                    return
+                try:
+                    async with async_session() as sess:
+                        from sqlalchemy import select as sel
+                        doc = (await sess.execute(
+                            sel(OpportunityDocument).where(OpportunityDocument.id == doc_ref.id)
+                        )).scalar_one_or_none()
+                        if not doc or doc.doc_category != "solicitation":
+                            return
+                        if doc.embed_status not in ("pending", "failed"):
+                            return
+
+                        await document_service._embed_document(
+                            doc, embed_settings, ocr_settings, sess,
+                            embed_client=embed_client,
+                            chroma_collection=chroma_collection,
+                        )
+                        await sess.commit()
+                        if doc.embed_status == "completed":
+                            embedded += 1
+                        else:
+                            errors += 1
+                except Exception as e:
+                    logger.error(f"Embed error for doc {doc_ref.id}: {e}")
+                    errors += 1
+                phase["processed"] = embedded
+                phase["errors"] = errors
+                if embedded % 5 == 0:
+                    await self._publish_state()
+
+        batch_size = 10
+        for i in range(0, len(docs), batch_size):
+            if self._cancel_requested:
+                break
+            batch = docs[i:i + batch_size]
+            await asyncio.gather(*[_embed_one(d) for d in batch])
+
+        phase["status"] = "failed" if self._cancel_requested else "completed"
+        if self._cancel_requested:
+            phase["detail"] = "Cancelled"
+        else:
+            phase["detail"] = f"{embedded} solicitation docs embedded"
         await self._publish_state()
 
 

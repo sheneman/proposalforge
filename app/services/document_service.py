@@ -1526,6 +1526,16 @@ Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|
             chroma_documents = []
             chroma_metadatas = []
 
+            # Build opportunity metadata for ChromaDB enrichment
+            opp_meta = {}
+            if doc.opportunity:
+                opp_meta = {
+                    "opportunity_number": doc.opportunity.opportunity_number or "",
+                    "opportunity_title": doc.opportunity.title or "",
+                    "agency_code": doc.opportunity.agency_code or "",
+                    "grants_gov_url": doc.opportunity.grants_gov_url or "",
+                }
+
             chunk_rows = []
             for idx, chunk_data in enumerate(chunks):
                 chroma_id = f"doc_{doc.id}_chunk_{idx}_{uuid.uuid4().hex[:8]}"
@@ -1537,7 +1547,12 @@ Respond with ONLY a JSON object: {"category": "<category>", "confidence": "high|
                     "opportunity_id": doc.opportunity_id,
                     "attachment_id": doc.attachment_id,
                     "chunk_index": idx,
+                    "total_chunks": len(chunks),
                     "file_name": doc.file_name,
+                    "doc_category": doc.doc_category or "",
+                    "source": doc.source or "",
+                    "local_path": doc.local_path or "",
+                    **opp_meta,
                 })
 
                 chunk_row = DocumentChunk(

@@ -72,6 +72,10 @@ async def lifespan(app: FastAPI):
     # Clean up any orphaned "running" sync logs from prior crashes/restarts
     await sync_service._mark_stale_syncs()
 
+    # Clear stale pipeline state from Redis (e.g. after deploy/restart)
+    from app.services.pipeline_service import pipeline_service
+    await pipeline_service.clear_stale_state()
+
     # Resume interrupted workflow runs after a short delay for services to stabilize
     async def _delayed_resume():
         await asyncio.sleep(3)

@@ -35,6 +35,22 @@ class PipelineService:
             "phases": _empty_phases(),
         }
 
+    async def clear_stale_state(self):
+        """Clear any stale 'running' pipeline state in Redis (call on startup)."""
+        try:
+            shared = await cache_service.get(REDIS_PIPELINE_KEY)
+            if shared and shared.get("is_running"):
+                logger.info("Clearing stale pipeline state from previous run")
+                shared["is_running"] = False
+                shared["current_phase"] = None
+                for p in shared.get("phases", []):
+                    if p.get("status") == "running":
+                        p["status"] = "failed"
+                        p["detail"] = "Interrupted (server restart)"
+                await cache_service.set(REDIS_PIPELINE_KEY, shared, REDIS_PIPELINE_TTL)
+        except Exception:
+            pass
+
     async def _publish_state(self):
         try:
             await cache_service.set(REDIS_PIPELINE_KEY, self.state, REDIS_PIPELINE_TTL)

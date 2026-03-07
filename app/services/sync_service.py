@@ -328,10 +328,9 @@ class SyncService:
             if is_open:
                 try:
                     from app.services.document_service import document_service
-                    doc_count = await document_service.extract_attachment_metadata(session, opp, detail)
-                    # If no Grants.gov attachments, try extracting linked docs from description
-                    if doc_count == 0:
-                        await document_service.extract_linked_documents(session, opp)
+                    await document_service.extract_attachment_metadata(session, opp, detail)
+                    # Note: linked document extraction (HTTP fetches) is deferred
+                    # to the Retrieve phase to keep Discovery fast
                 except Exception as e:
                     logger.warning(f"Failed to extract document metadata for {opp_id}: {e}")
 

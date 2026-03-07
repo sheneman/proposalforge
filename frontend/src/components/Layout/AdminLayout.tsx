@@ -1,20 +1,10 @@
 import { Container, Nav, Navbar } from 'react-bootstrap';
 
 interface Props {
-  activeTab: string;
-  onTabChange: (tab: string) => void;
   children: React.ReactNode;
 }
 
-const TABS = [
-  { key: 'datasources', label: 'Data Sources', icon: 'bi-database' },
-  { key: 'history', label: 'History', icon: 'bi-clock-history' },
-  { key: 'scheduling', label: 'Scheduling', icon: 'bi-calendar-event' },
-  { key: 'models', label: 'Models', icon: 'bi-cpu' },
-  { key: 'settings', label: 'Settings', icon: 'bi-gear' },
-];
-
-export default function AdminLayout({ activeTab, onTabChange, children }: Props) {
+export default function AdminLayout({ children }: Props) {
   return (
     <>
       <Navbar className="bg-navy" variant="dark" expand="lg">
@@ -25,21 +15,13 @@ export default function AdminLayout({ activeTab, onTabChange, children }: Props)
           <Navbar.Toggle />
           <Navbar.Collapse>
             <Nav className="me-auto">
-              {TABS.map((t) => (
-                <Nav.Link
-                  key={t.key}
-                  active={activeTab === t.key}
-                  onClick={() => onTabChange(t.key)}
-                  className={activeTab === t.key ? 'text-gold' : ''}
-                >
-                  <i className={`${t.icon} me-1`}></i>{t.label}
-                </Nav.Link>
-              ))}
+              <Nav.Link href="/">Home</Nav.Link>
+              <Nav.Link href="/search">Search</Nav.Link>
+              <Nav.Link href="/analytics">Analytics</Nav.Link>
+              <Nav.Link href="/researchers">Researchers</Nav.Link>
+              <Nav.Link active className="text-gold">Admin</Nav.Link>
             </Nav>
             <Nav>
-              <Nav.Link href="/admin/legacy" className="text-muted small">
-                Legacy Admin
-              </Nav.Link>
               <Nav.Link href="/admin/logout">
                 <i className="bi bi-box-arrow-right me-1"></i>Logout
               </Nav.Link>
@@ -47,7 +29,7 @@ export default function AdminLayout({ activeTab, onTabChange, children }: Props)
           </Navbar.Collapse>
         </Container>
       </Navbar>
-      <Container fluid className="py-4">
+      <Container fluid className="py-4 px-4">
         {children}
       </Container>
     </>

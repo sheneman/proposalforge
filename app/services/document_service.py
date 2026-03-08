@@ -1151,21 +1151,33 @@ class DocumentService:
         try:
             if ext in self._PDF_EXTS:
                 # Try fast local extraction first (pymupdf), fall back to OCR for scanned PDFs
-                extracted_text = await self._ocr_pymupdf(doc.local_path)
+                try:
+                    extracted_text = await self._ocr_pymupdf(doc.local_path)
+                except Exception as e:
+                    logger.warning(f"pymupdf failed for doc {doc.id}: {e}")
+                    extracted_text = None
                 if extracted_text and len(extracted_text.strip()) >= 200:
                     # pymupdf got enough text — no need for OCR
                     pass
                 else:
-                    # Scanned/image PDF — send to OCR service
-                    method = ocr_settings.get("method", "dotsocr")
-                    if method == "dotsocr":
-                        extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
-                    elif method == "pymupdf":
-                        pass  # Already tried above
+                    # Scanned/image PDF — send to OCR service (skip files > 5MB to avoid OOM)
+                    file_size = doc.file_size or 0
+                    if file_size > 5 * 1024 * 1024:
+                        logger.info(f"Skipping OCR for large PDF doc {doc.id} ({file_size} bytes), using pymupdf text")
+                        if not extracted_text or not extracted_text.strip():
+                            doc.ocr_status = "skipped"
+                            doc.error_message = "PDF too large for OCR and no extractable text"
+                            return
                     else:
-                        doc.ocr_status = "failed"
-                        doc.error_message = f"Unknown OCR method: {method}"
-                        return
+                        method = ocr_settings.get("method", "dotsocr")
+                        if method == "dotsocr":
+                            extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
+                        elif method == "pymupdf":
+                            pass  # Already tried above
+                        else:
+                            doc.ocr_status = "failed"
+                            doc.error_message = f"Unknown OCR method: {method}"
+                            return
             elif ext in self._DOCX_EXTS:
                 extracted_text = await self._extract_docx(doc.local_path)
             elif ext in self._DOC_EXTS:

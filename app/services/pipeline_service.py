@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 
 from app.services.cache_service import cache_service
@@ -89,35 +90,58 @@ class PipelineService:
             p["status"] = "pending"
         await self._publish_state()
 
-        # Reset all document processing statuses so this run starts fresh
-        await self._reset_document_statuses()
+        # Nuke all existing opportunities so we get a clean sync
+        await self._nuke_all_opportunities()
 
         self._task = asyncio.create_task(self._run(types))
 
-    async def _reset_document_statuses(self):
-        """Reset all document statuses to pending so the pipeline processes everything."""
+    async def _nuke_all_opportunities(self):
+        """Delete ALL opportunities, documents, chunks, and related data for a clean re-sync."""
+        import shutil
         from app.database import async_session
+        from app.config import settings as app_settings
         from sqlalchemy import text
 
+        logger.info("Nuking all opportunities and documents for clean re-sync...")
+
+        # Clear ChromaDB collection
+        try:
+            import chromadb
+            chroma_client = chromadb.HttpClient(
+                host=app_settings.CHROMADB_HOST,
+                port=app_settings.CHROMADB_PORT,
+            )
+            try:
+                chroma_client.delete_collection("opportunity_documents")
+                logger.info("Cleared ChromaDB collection")
+            except Exception:
+                pass  # Collection may not exist yet
+        except Exception as e:
+            logger.warning(f"Could not clear ChromaDB: {e}")
+
+        # Delete all DB records (CASCADE handles child tables)
         async with async_session() as session:
             async with session.begin():
-                await session.execute(text(
-                    "UPDATE opportunity_documents SET download_status = 'pending' "
-                    "WHERE download_status NOT IN ('downloaded', 'skipped')"
-                ))
-                await session.execute(text(
-                    "UPDATE opportunity_documents SET ocr_status = 'pending' "
-                    "WHERE ocr_status NOT IN ('completed', 'skipped')"
-                ))
-                await session.execute(text(
-                    "UPDATE opportunity_documents SET classify_status = 'pending' "
-                    "WHERE classify_status NOT IN ('completed', 'skipped')"
-                ))
-                await session.execute(text(
-                    "UPDATE opportunity_documents SET embed_status = 'pending' "
-                    "WHERE embed_status NOT IN ('completed', 'skipped')"
-                ))
-        logger.info("Reset all pending/failed document statuses for fresh pipeline run")
+                await session.execute(text("DELETE FROM document_chunks"))
+                await session.execute(text("DELETE FROM opportunity_documents"))
+                await session.execute(text("DELETE FROM opportunity_funding_categories"))
+                await session.execute(text("DELETE FROM opportunity_applicant_types"))
+                await session.execute(text("DELETE FROM opportunity_funding_instruments"))
+                await session.execute(text("DELETE FROM opportunity_alns"))
+                await session.execute(text("DELETE FROM opportunities"))
+        logger.info("Deleted all opportunity data from database")
+
+        # Wipe downloaded document files
+        doc_path = app_settings.DOCUMENT_STORAGE_PATH
+        if os.path.exists(doc_path):
+            shutil.rmtree(doc_path, ignore_errors=True)
+            os.makedirs(doc_path, exist_ok=True)
+            logger.info(f"Cleared document storage at {doc_path}")
+
+        # Invalidate all caches
+        from app.services.cache_service import cache_service
+        await cache_service.invalidate_all()
+        logger.info("Nuke complete — ready for fresh sync")
 
     async def cancel(self):
         if self.is_running:

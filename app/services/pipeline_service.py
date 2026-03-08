@@ -419,39 +419,47 @@ class PipelineService:
                         result = await session.execute(stmt)
                         all_opps = list(result.scalars().all())
 
-                        total_opps = len(all_opps)
-                        web_found = 0
-                        web_searched = 0
-                        phase["detail"] = f"Web search: 0/{total_opps} searched, 0 PDFs found"
-                        await self._publish_state()
+                    total_opps = len(all_opps)
+                    web_found = 0
+                    web_searched = 0
+                    phase["detail"] = f"Web search: 0/{total_opps} searched, 0 PDFs found"
+                    await self._publish_state()
 
-                        async with httpx.AsyncClient(
-                            follow_redirects=True, timeout=30.0,
-                            headers={"User-Agent": "ProposalForge/1.0"},
-                        ) as client:
-                            # Process in batches of 500
-                            batch_size = 500
-                            for batch_start in range(0, total_opps, batch_size):
-                                if self._cancel_requested:
-                                    break
-                                batch = all_opps[batch_start:batch_start + batch_size]
-                                for i, opp in enumerate(batch):
-                                    if self._cancel_requested:
-                                        break
-                                    try:
-                                        found = await document_service._web_search_for_opportunity(opp, session, client)
+                    search_semaphore = asyncio.Semaphore(8)
+
+                    async def _search_one(opp):
+                        nonlocal web_found, web_searched
+                        if self._cancel_requested:
+                            return
+                        async with search_semaphore:
+                            if self._cancel_requested:
+                                return
+                            try:
+                                async with httpx.AsyncClient(
+                                    follow_redirects=True, timeout=30.0,
+                                    headers={"User-Agent": "ProposalForge/1.0"},
+                                ) as client:
+                                    async with async_session() as sess:
+                                        found = await document_service._web_search_for_opportunity(opp, sess, client)
                                         if found > 0:
-                                            await session.commit()
+                                            await sess.commit()
                                             web_found += found
                                             phase["processed"] = link_docs + web_found
-                                    except Exception:
-                                        phase["errors"] += 1
-                                        await session.rollback()
-                                    web_searched += 1
-                                    if web_searched % 5 == 0:
-                                        phase["detail"] = f"Web search: {web_searched}/{total_opps} searched, {web_found} PDFs found"
-                                        await self._publish_state()
-                                    await asyncio.sleep(1)
+                            except Exception:
+                                phase["errors"] += 1
+                            web_searched += 1
+                            if web_searched % 10 == 0:
+                                phase["detail"] = f"Web search: {web_searched}/{total_opps} searched, {web_found} PDFs found"
+                                await self._publish_state()
+
+                    batch_size = 50
+                    for batch_start in range(0, total_opps, batch_size):
+                        if self._cancel_requested:
+                            break
+                        batch = all_opps[batch_start:batch_start + batch_size]
+                        await asyncio.gather(*[_search_one(opp) for opp in batch])
+                        phase["detail"] = f"Web search: {web_searched}/{total_opps} searched, {web_found} PDFs found"
+                        await self._publish_state()
             except Exception as e:
                 logger.error(f"Phase 3 web search failed: {e}", exc_info=True)
             finally:

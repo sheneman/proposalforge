@@ -1150,15 +1150,22 @@ class DocumentService:
         # Route by file extension
         try:
             if ext in self._PDF_EXTS:
-                method = ocr_settings.get("method", "dotsocr")
-                if method == "dotsocr":
-                    extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
-                elif method == "pymupdf":
-                    extracted_text = await self._ocr_pymupdf(doc.local_path)
+                # Try fast local extraction first (pymupdf), fall back to OCR for scanned PDFs
+                extracted_text = await self._ocr_pymupdf(doc.local_path)
+                if extracted_text and len(extracted_text.strip()) >= 200:
+                    # pymupdf got enough text — no need for OCR
+                    pass
                 else:
-                    doc.ocr_status = "failed"
-                    doc.error_message = f"Unknown OCR method: {method}"
-                    return
+                    # Scanned/image PDF — send to OCR service
+                    method = ocr_settings.get("method", "dotsocr")
+                    if method == "dotsocr":
+                        extracted_text = await self._ocr_dotsocr(doc.local_path, ocr_settings, client=ocr_client)
+                    elif method == "pymupdf":
+                        pass  # Already tried above
+                    else:
+                        doc.ocr_status = "failed"
+                        doc.error_message = f"Unknown OCR method: {method}"
+                        return
             elif ext in self._DOCX_EXTS:
                 extracted_text = await self._extract_docx(doc.local_path)
             elif ext in self._DOC_EXTS:

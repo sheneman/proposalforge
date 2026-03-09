@@ -505,12 +505,9 @@ class PipelineService:
         phase["total"] = len(docs)
         await self._publish_state()
 
-        num_workers = ocr_settings.get("doc_workers", 4)
-        try:
-            num_workers = int(num_workers)
-        except (ValueError, TypeError):
-            num_workers = 4
-        semaphore = asyncio.Semaphore(num_workers)
+        # Use concurrency of 2 for extraction — pymupdf is fast but dotsocr
+        # OCR responses can be large and concurrent calls risk OOM worker crashes
+        semaphore = asyncio.Semaphore(2)
         extracted = 0
         errors = 0
 

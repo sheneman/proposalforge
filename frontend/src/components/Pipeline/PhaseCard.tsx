@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { OverlayTrigger, Popover } from 'react-bootstrap';
 import type { PhaseStatus, PhaseStatusValue } from '../../types';
 
 const ICONS: Record<number, string> = {
@@ -34,10 +36,36 @@ export default function PhaseCard({ phase }: Props) {
   const style = STATUS_STYLES[phase.status];
   const icon = ICONS[phase.phase] || 'bi-circle';
   const countLabel = COUNT_LABELS[phase.phase] || '';
+  const hasErrors = phase.errors > 0;
+  const hasErrorLog = phase.error_log && phase.error_log.length > 0;
 
-  return (
+  const errorPopover = (
+    <Popover id={`error-popover-${phase.phase}`} style={{ maxWidth: 400 }}>
+      <Popover.Header as="h3" className="bg-danger text-white py-1 px-2" style={{ fontSize: '0.8rem' }}>
+        {phase.name} — {phase.errors} error(s)
+      </Popover.Header>
+      <Popover.Body className="p-2" style={{ maxHeight: 250, overflow: 'auto' }}>
+        {phase.detail && (
+          <div className="fw-semibold small mb-1">{phase.detail}</div>
+        )}
+        {hasErrorLog ? (
+          <ul className="list-unstyled mb-0" style={{ fontSize: '0.7rem' }}>
+            {phase.error_log.slice(-20).map((err, i) => (
+              <li key={i} className="text-danger mb-1 border-bottom pb-1">
+                <i className="bi bi-exclamation-circle me-1"></i>{err}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <small className="text-muted">No detailed error log available</small>
+        )}
+      </Popover.Body>
+    </Popover>
+  );
+
+  const card = (
     <div className={`pipeline-phase-card border rounded-3 p-3 text-center position-relative ${style.border}`}
-         style={{ minWidth: 110, maxWidth: 130 }}>
+         style={{ minWidth: 110, maxWidth: 130, cursor: hasErrors ? 'pointer' : 'default' }}>
       {style.badge && (
         <span className={`position-absolute top-0 end-0 translate-middle badge rounded-pill ${style.badge}`}
               style={{ fontSize: '0.65rem' }}>
@@ -61,11 +89,21 @@ export default function PhaseCard({ phase }: Props) {
           {phase.processed}/{phase.total}
         </div>
       )}
-      {phase.errors > 0 && (
+      {hasErrors && (
         <div className="text-danger" style={{ fontSize: '0.65rem' }}>
-          {phase.errors} errors
+          <i className="bi bi-exclamation-circle me-1"></i>{phase.errors} errors
         </div>
       )}
     </div>
   );
+
+  if (hasErrors) {
+    return (
+      <OverlayTrigger trigger="click" placement="bottom" overlay={errorPopover} rootClose>
+        {card}
+      </OverlayTrigger>
+    );
+  }
+
+  return card;
 }

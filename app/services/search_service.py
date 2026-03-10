@@ -323,10 +323,10 @@ class SearchService:
         archived_top_agencies = [{"name": r[0], "count": r[1]} for r in archived_agency_result.all()]
 
         stats = {
-            "total_open": row[0] or 0,
-            "closing_this_week": row[1] or 0,
-            "closing_this_month": row[2] or 0,
-            "new_this_week": row[3] or 0,
+            "total_open": int(row[0] or 0),
+            "closing_this_week": int(row[1] or 0),
+            "closing_this_month": int(row[2] or 0),
+            "new_this_week": int(row[3] or 0),
             "top_agencies": top_agencies,
             "top_categories": top_categories,
             "closed": {

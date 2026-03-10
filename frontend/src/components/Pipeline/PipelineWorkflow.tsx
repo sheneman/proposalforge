@@ -90,6 +90,35 @@ export default function PipelineWorkflow() {
         </div>
       )}
 
+      {/* Summary line showing detail for completed/failed phases */}
+      {!status.is_running && (() => {
+        const failedPhases = status.phases.filter(p => p.status === 'failed');
+        const totalErrors = status.phases.reduce((s, p) => s + p.errors, 0);
+        const lastCompleted = [...status.phases].reverse().find(p => p.status === 'completed' || p.status === 'failed');
+        return (failedPhases.length > 0 || totalErrors > 0) ? (
+          <Alert variant={failedPhases.length > 0 ? 'danger' : 'warning'} className="py-2 small mb-2">
+            <div className="fw-semibold">
+              {failedPhases.length > 0
+                ? <><i className="bi bi-exclamation-triangle me-1"></i>Pipeline stopped: {failedPhases.map(p => p.name).join(', ')} failed</>
+                : <><i className="bi bi-check-circle me-1"></i>Pipeline completed with {totalErrors} error(s)</>
+              }
+            </div>
+            {status.phases.filter(p => p.detail).map((p) => (
+              <div key={p.phase} className="text-muted" style={{ fontSize: '0.75rem' }}>
+                {p.name}: {p.detail}
+              </div>
+            ))}
+            <div className="mt-1" style={{ fontSize: '0.7rem' }}>
+              <i className="bi bi-info-circle me-1"></i>Click any phase with errors for details
+            </div>
+          </Alert>
+        ) : lastCompleted ? (
+          <div className="text-center text-success small mb-2">
+            <i className="bi bi-check-circle me-1"></i>Pipeline completed successfully
+          </div>
+        ) : null;
+      })()}
+
       {actionError && <Alert variant="danger" className="py-1 small">{actionError}</Alert>}
 
       <div className="d-flex gap-2 mt-2">

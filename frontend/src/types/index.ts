@@ -8,6 +8,7 @@ export interface PhaseStatus {
   processed: number;
   errors: number;
   detail: string;
+  error_log: string[];
 }
 
 export interface PipelineStatus {

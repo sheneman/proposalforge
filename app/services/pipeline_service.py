@@ -14,13 +14,20 @@ REDIS_PIPELINE_TTL = 3600
 
 def _empty_phases() -> list[dict]:
     return [
-        {"phase": 1, "name": "Discovery", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
-        {"phase": 2, "name": "Download", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
-        {"phase": 3, "name": "Retrieve", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
-        {"phase": 4, "name": "Extract", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
-        {"phase": 5, "name": "Classify", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
-        {"phase": 6, "name": "Embed", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": ""},
+        {"phase": 1, "name": "Discovery", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": "", "error_log": []},
+        {"phase": 2, "name": "Download", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": "", "error_log": []},
+        {"phase": 3, "name": "Retrieve", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": "", "error_log": []},
+        {"phase": 4, "name": "Extract", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": "", "error_log": []},
+        {"phase": 5, "name": "Classify", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": "", "error_log": []},
+        {"phase": 6, "name": "Embed", "status": "idle", "total": 0, "processed": 0, "errors": 0, "detail": "", "error_log": []},
     ]
+
+
+def _log_error(phase: dict, msg: str):
+    """Append an error message to a phase's error_log (max 50 entries)."""
+    phase["error_log"].append(msg)
+    if len(phase["error_log"]) > 50:
+        phase["error_log"] = phase["error_log"][-50:]
 
 
 class PipelineService:
@@ -200,7 +207,8 @@ class PipelineService:
             for p in self.state["phases"]:
                 if p["status"] == "running":
                     p["status"] = "failed"
-                    p["detail"] = str(e)[:200]
+                    p["detail"] = f"Fatal error: {str(e)[:200]}"
+                    _log_error(p, f"Fatal: {str(e)[:500]}")
         finally:
             self.is_running = False
             self._cancel_requested = False
@@ -315,11 +323,14 @@ class PipelineService:
                             else:
                                 errors += 1
                 except Exception as e:
-                    logger.error(f"Download error for doc {doc_ref.id}: {e}")
+                    err_msg = f"Doc {doc_ref.id} ({getattr(doc_ref, 'file_name', '?')}): {str(e)[:200]}"
+                    logger.error(f"Download error: {err_msg}")
+                    _log_error(phase, err_msg)
                     errors += 1
                 phase["processed"] = downloaded
                 phase["errors"] = errors
-                if downloaded % 10 == 0:
+                phase["detail"] = f"Downloaded {downloaded}/{phase['total']}, {errors} errors"
+                if (downloaded + errors) % 5 == 0:
                     await self._publish_state()
 
         batch_size = max(num_workers * 3, 10)
@@ -332,6 +343,8 @@ class PipelineService:
         phase["status"] = "failed" if self._cancel_requested else "completed"
         if self._cancel_requested:
             phase["detail"] = "Cancelled"
+        else:
+            phase["detail"] = f"{downloaded} downloaded, {errors} errors"
         await self._publish_state()
 
     async def _phase_3_retrieve(self):
@@ -367,6 +380,7 @@ class PipelineService:
             await self._publish_state()
         except Exception as e:
             logger.error(f"Phase 3 link extraction failed: {e}", exc_info=True)
+            _log_error(phase, f"Link extraction: {str(e)[:300]}")
             phase["errors"] += 1
         finally:
             document_service.is_processing = False
@@ -445,7 +459,10 @@ class PipelineService:
                                             await sess.commit()
                                             web_found += found
                                             phase["processed"] = link_docs + web_found
-                            except Exception:
+                            except Exception as e:
+                                err_msg = f"Web search opp {getattr(opp, 'opportunity_id', '?')}: {str(e)[:150]}"
+                                logger.warning(err_msg)
+                                _log_error(phase, err_msg)
                                 phase["errors"] += 1
                             web_searched += 1
                             if web_searched % 10 == 0:
@@ -505,21 +522,21 @@ class PipelineService:
         phase["total"] = len(docs)
         await self._publish_state()
 
-        # Use concurrency of 2 for extraction — pymupdf is fast but dotsocr
-        # OCR responses can be large and concurrent calls risk OOM worker crashes
-        semaphore = asyncio.Semaphore(2)
+        # Process docs ONE AT A TIME to isolate crashes (pymupdf can segfault on corrupt PDFs)
         extracted = 0
         errors = 0
 
         ocr_client = httpx.AsyncClient(timeout=300.0)
 
-        async def _ocr_one(doc_ref):
-            nonlocal extracted, errors
-            if self._cancel_requested:
-                return
-            async with semaphore:
+        try:
+            for i, doc_ref in enumerate(docs):
                 if self._cancel_requested:
-                    return
+                    break
+                doc_name = getattr(doc_ref, 'file_name', None) or f"doc-{doc_ref.id}"
+                phase["detail"] = f"Extracting {i+1}/{len(docs)}: {doc_name[:60]}"
+                if i % 5 == 0:
+                    await self._publish_state()
+
                 try:
                     async with async_session() as sess:
                         from sqlalchemy import select as sel
@@ -537,29 +554,43 @@ class PipelineService:
                             await sess.commit()
                             if doc.ocr_status in ("completed", "skipped"):
                                 extracted += 1
+                                logger.info(f"Extracted doc {doc.id} ({doc_name}): {doc.ocr_status}, {doc.extracted_text_length or 0} chars")
                             else:
                                 errors += 1
+                                err_msg = f"Doc {doc.id} ({doc_name}): status={doc.ocr_status}, {doc.error_message or 'unknown'}"
+                                logger.warning(f"Extract failed: {err_msg}")
+                                _log_error(phase, err_msg)
+                        else:
+                            extracted += 1  # already processed or missing
                 except Exception as e:
-                    logger.error(f"OCR error for doc {doc_ref.id}: {e}")
                     errors += 1
+                    err_msg = f"Doc {doc_ref.id} ({doc_name}): {str(e)[:300]}"
+                    logger.error(f"Extract exception: {err_msg}", exc_info=True)
+                    _log_error(phase, err_msg)
+                    # Mark as failed in DB so we don't retry forever
+                    try:
+                        async with async_session() as sess:
+                            from sqlalchemy import select as sel
+                            doc = (await sess.execute(
+                                sel(OpportunityDocument).where(OpportunityDocument.id == doc_ref.id)
+                            )).scalar_one_or_none()
+                            if doc:
+                                doc.ocr_status = "failed"
+                                doc.error_message = f"Exception: {str(e)[:500]}"
+                                await sess.commit()
+                    except Exception:
+                        pass  # best effort
+
                 phase["processed"] = extracted
                 phase["errors"] = errors
-                if extracted % 10 == 0:
-                    await self._publish_state()
-
-        try:
-            batch_size = 10
-            for i in range(0, len(docs), batch_size):
-                if self._cancel_requested:
-                    break
-                batch = docs[i:i + batch_size]
-                await asyncio.gather(*[_ocr_one(d) for d in batch])
         finally:
             await ocr_client.aclose()
 
         phase["status"] = "failed" if self._cancel_requested else "completed"
         if self._cancel_requested:
             phase["detail"] = "Cancelled"
+        else:
+            phase["detail"] = f"{extracted} extracted, {errors} errors"
         await self._publish_state()
 
     async def _phase_5_classify(self):
@@ -625,10 +656,13 @@ class PipelineService:
                             await sess.commit()
                             classified += 1
                 except Exception as e:
-                    logger.error(f"Classify error for doc {doc_ref.id}: {e}")
+                    err_msg = f"Doc {doc_ref.id}: {str(e)[:200]}"
+                    logger.error(f"Classify error: {err_msg}")
+                    _log_error(phase, err_msg)
                     errors += 1
                 phase["processed"] = classified
                 phase["errors"] = errors
+                phase["detail"] = f"Classified {classified}/{phase['total']}, {errors} errors"
                 if classified % 10 == 0:
                     await self._publish_state()
 
@@ -642,6 +676,8 @@ class PipelineService:
         phase["status"] = "failed" if self._cancel_requested else "completed"
         if self._cancel_requested:
             phase["detail"] = "Cancelled"
+        else:
+            phase["detail"] = f"{classified} classified, {errors} errors"
         await self._publish_state()
 
     async def _phase_6_embed(self):
@@ -756,7 +792,9 @@ class PipelineService:
                             logger.warning(f"Deadlock on doc {doc_ref.id}, retry {attempt + 1}/{max_retries}")
                             await asyncio.sleep(1 + attempt)
                             continue
-                        logger.error(f"Embed error for doc {doc_ref.id}: {e}")
+                        err_msg = f"Doc {doc_ref.id}: {str(e)[:200]}"
+                        logger.error(f"Embed error: {err_msg}")
+                        _log_error(phase, err_msg)
                         errors += 1
                         break
                 phase["processed"] = embedded

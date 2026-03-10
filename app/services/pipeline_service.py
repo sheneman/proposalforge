@@ -548,7 +548,7 @@ class PipelineService:
                     await self._publish_state()
 
         try:
-            batch_size = max(num_workers * 3, 10)
+            batch_size = 10
             for i in range(0, len(docs), batch_size):
                 if self._cancel_requested:
                     break

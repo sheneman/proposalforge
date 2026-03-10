@@ -447,53 +447,53 @@ class DocumentService:
             result = await session.execute(stmt)
             opps = result.scalars().unique().all()
 
-            if not opps:
-                logger.info("No opportunities without documents to scan for links")
-                return
+        if not opps:
+            logger.info("No opportunities without documents to scan for links")
+            return
 
-            self.processing_stats["total"] = len(opps)
-            self.processing_stats["scanned"] = 0
-            self.processing_stats["downloaded"] = 0
-            await self._publish_stats()
-            logger.info(f"Link extraction: scanning {len(opps)} opportunities (with URLs)")
+        self.processing_stats["total"] = len(opps)
+        self.processing_stats["scanned"] = 0
+        self.processing_stats["downloaded"] = 0
+        await self._publish_stats()
+        logger.info(f"Link extraction: scanning {len(opps)} opportunities (with URLs)")
 
-            total_created = 0
-            fetch_semaphore = asyncio.Semaphore(10)
+        total_created = 0
+        fetch_semaphore = asyncio.Semaphore(10)
 
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=30.0,
-                headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
-            ) as client:
-                batch_size = 100
-                for batch_start in range(0, len(opps), batch_size):
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0,
+            headers={"User-Agent": "ProposalForge/1.0 (Federal Grant Discovery)"},
+        ) as client:
+            batch_size = 100
+            for batch_start in range(0, len(opps), batch_size):
+                if self._cancel_requested:
+                    break
+                batch = opps[batch_start:batch_start + batch_size]
+
+                async def _process_opp(idx, opp):
+                    nonlocal total_created
                     if self._cancel_requested:
-                        break
-                    batch = opps[batch_start:batch_start + batch_size]
-
-                    async def _process_opp(idx, opp):
-                        nonlocal total_created
+                        return
+                    async with fetch_semaphore:
                         if self._cancel_requested:
                             return
-                        async with fetch_semaphore:
-                            if self._cancel_requested:
-                                return
-                            try:
-                                created = await self.extract_linked_documents(session, opp, client=client)
+                        try:
+                            async with async_session() as sess:
+                                created = await self.extract_linked_documents(sess, opp, client=client)
                                 if created > 0:
-                                    await session.commit()
+                                    await sess.commit()
                                     total_created += created
                                     self.processing_stats["downloaded"] = total_created
-                            except Exception as e:
-                                logger.warning(f"Link extraction for {opp.opportunity_id}: {e}")
-                                self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
-                                await session.rollback()
-                            self.processing_stats["scanned"] = batch_start + idx + 1
+                        except Exception as e:
+                            logger.warning(f"Link extraction for {opp.opportunity_id}: {e}")
+                            self.processing_stats["errors"] = self.processing_stats.get("errors", 0) + 1
+                        self.processing_stats["scanned"] = batch_start + idx + 1
 
-                    await asyncio.gather(*[_process_opp(i, opp) for i, opp in enumerate(batch)])
-                    await self._publish_stats()
+                await asyncio.gather(*[_process_opp(i, opp) for i, opp in enumerate(batch)])
+                await self._publish_stats()
 
-            logger.info(f"Link extraction complete: {total_created} docs from {len(opps)} opportunities")
+        logger.info(f"Link extraction complete: {total_created} docs from {len(opps)} opportunities")
 
         # After link extraction, create synopsis docs for remaining doc-less opportunities
         if not self._cancel_requested:

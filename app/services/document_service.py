@@ -835,7 +835,7 @@ class DocumentService:
                 content = pdf_resp.content
                 if len(content) < 1000:  # Skip tiny files
                     continue
-                if len(content) > 50_000_000:  # Skip >50MB files
+                if len(content) > 10_000_000:  # Skip >10MB files
                     continue
 
                 # Save to disk
@@ -1261,7 +1261,14 @@ class DocumentService:
             doc.close()
             return "\n\n".join(pages)
 
-        return await loop.run_in_executor(None, _extract)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _extract),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"pymupdf timed out after 60s for {file_path}")
+            return None
 
     async def _extract_docx(self, file_path: str) -> str | None:
         """Extract text from .docx using python-docx."""

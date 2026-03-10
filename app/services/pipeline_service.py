@@ -425,7 +425,7 @@ class PipelineService:
                     phase["detail"] = f"Web search: 0/{total_opps} searched, 0 PDFs found"
                     await self._publish_state()
 
-                    search_semaphore = asyncio.Semaphore(8)
+                    search_semaphore = asyncio.Semaphore(4)
 
                     async def _search_one(opp):
                         nonlocal web_found, web_searched

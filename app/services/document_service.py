@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 import uuid
 from datetime import date, datetime
 
@@ -1249,25 +1250,39 @@ class DocumentService:
                 await client.aclose()
 
     async def _ocr_pymupdf(self, file_path: str) -> str | None:
-        """Extract text from PDF using PyMuPDF (local, no network)."""
-        loop = asyncio.get_event_loop()
-
-        def _extract():
-            import pymupdf
-            doc = pymupdf.open(file_path)
-            pages = []
-            for page in doc:
-                pages.append(page.get_text())
-            doc.close()
-            return "\n\n".join(pages)
-
+        """Extract text from PDF using PyMuPDF in a subprocess (isolates segfaults)."""
+        # Run pymupdf in a separate process so a segfault on a corrupt PDF
+        # kills only the child process, not the uvicorn worker.
+        script = (
+            "import sys, pymupdf\n"
+            "doc = pymupdf.open(sys.argv[1])\n"
+            "for page in doc:\n"
+            "    sys.stdout.write(page.get_text())\n"
+            "    sys.stdout.write('\\n\\n')\n"
+            "doc.close()\n"
+        )
         try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, _extract),
-                timeout=60,
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", script, file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except asyncio.TimeoutError:
-            logger.warning(f"pymupdf timed out after 60s for {file_path}")
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning(f"pymupdf subprocess timed out after 60s for {file_path}")
+                return None
+
+            if proc.returncode != 0:
+                err = stderr.decode(errors="replace")[:300] if stderr else "unknown"
+                logger.warning(f"pymupdf subprocess failed (rc={proc.returncode}) for {file_path}: {err}")
+                return None
+
+            return stdout.decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.warning(f"pymupdf subprocess error for {file_path}: {e}")
             return None
 
     async def _extract_docx(self, file_path: str) -> str | None:
